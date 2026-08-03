@@ -705,7 +705,7 @@ static int tsl2583_read_raw(struct iio_dev *indio_dev,
 	case IIO_CHAN_INFO_INT_TIME:
 		if (chan->type == IIO_LIGHT) {
 			*val = 0;
-			*val2 = chip->als_settings.als_time;
+			*val2 = chip->als_settings.als_time * USEC_PER_MSEC;
 			ret = IIO_VAL_INT_PLUS_MICRO;
 		}
 		break;
@@ -738,6 +738,7 @@ static int tsl2583_write_raw(struct iio_dev *indio_dev,
 			     int val, int val2, long mask)
 {
 	struct tsl2583_chip *chip = iio_priv(indio_dev);
+	int old_value;
 	int ret;
 
 	ret = pm_runtime_resume_and_get(&chip->client->dev);
@@ -749,7 +750,7 @@ static int tsl2583_write_raw(struct iio_dev *indio_dev,
 	ret = -EINVAL;
 	switch (mask) {
 	case IIO_CHAN_INFO_CALIBBIAS:
-		if (chan->type == IIO_LIGHT) {
+		if (chan->type == IIO_LIGHT && val >= 250 && val <= 4000) {
 			chip->als_settings.als_gain_trim = val;
 			ret = 0;
 		}
@@ -760,18 +761,26 @@ static int tsl2583_write_raw(struct iio_dev *indio_dev,
 
 			for (i = 0; i < ARRAY_SIZE(gainadj); i++) {
 				if (gainadj[i].mean == val) {
+					old_value = chip->als_settings.als_gain;
 					chip->als_settings.als_gain = i;
 					ret = tsl2583_set_als_gain(chip);
+					if (ret < 0)
+						chip->als_settings.als_gain = old_value;
 					break;
 				}
 			}
 		}
 		break;
 	case IIO_CHAN_INFO_INT_TIME:
-		if (chan->type == IIO_LIGHT && !val && val2 >= 50 &&
-		    val2 <= 650 && !(val2 % 50)) {
-			chip->als_settings.als_time = val2;
+		if (chan->type == IIO_LIGHT && !val &&
+		    val2 >= 50 * USEC_PER_MSEC &&
+		    val2 <= 650 * USEC_PER_MSEC &&
+		    !(val2 % (50 * USEC_PER_MSEC))) {
+			old_value = chip->als_settings.als_time;
+			chip->als_settings.als_time = val2 / USEC_PER_MSEC;
 			ret = tsl2583_set_als_time(chip);
+			if (ret < 0)
+				chip->als_settings.als_time = old_value;
 		}
 		break;
 	default:
