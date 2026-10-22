@@ -4,6 +4,7 @@
 #include <linux/delay.h>
 #include <linux/devm-helpers.h>
 #include <linux/firmware.h>
+#include <linux/jiffies.h>
 #include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -49,6 +50,9 @@ struct j71t_charger {
 	bool stopping;
 	bool disabled;
 	bool faulted;
+	bool policy_logged;
+	int policy_error;
+	unsigned long policy_log_after;
 };
 
 /* AppleD2365PMU 0x6bc07ec middle/high branches, then 0x6bbff6c. */
@@ -193,7 +197,7 @@ static int j71t_battery_safe(void)
 
 	battery = power_supply_get_by_name("battery");
 	if (!battery)
-		return -ENODEV;
+		return -EAGAIN;
 	ret = power_supply_get_property(battery, POWER_SUPPLY_PROP_PRESENT, &value);
 	if (ret || value.intval != 1) {
 		ret = ret ?: -ENODEV;
@@ -209,7 +213,8 @@ static int j71t_battery_safe(void)
 		ret = -ERANGE;
 out:
 	power_supply_put(battery);
-	return ret;
+	/* The first asynchronous gauge sample may not exist yet. */
+	return ret == -ENODATA ? -EAGAIN : ret;
 }
 
 /* Restore the original handoff snapshot before changing policy ownership. */
@@ -315,6 +320,27 @@ static int j71t_enable(struct j71t_charger *charger)
 	return 0;
 }
 
+/* Log transitions immediately and persistent deferred decisions every 30 s. */
+static void j71t_policy_log(struct j71t_charger *charger, int error)
+{
+	if (charger->policy_logged && charger->policy_error == error &&
+	    time_before(jiffies, charger->policy_log_after))
+		return;
+	charger->policy_logged = true;
+	charger->policy_error = error;
+	charger->policy_log_after = jiffies + msecs_to_jiffies(30000);
+	if (charger->faulted)
+		dev_info(charger->dev, "charging policy fault latched; guarded owner retry required\n");
+	else if (charger->disabled)
+		dev_info(charger->dev, "charging policy disabled by owner\n");
+	else if (!charger->calibrated)
+		dev_info(charger->dev, "charging policy blocked: valid CBAT required\n");
+	else if (error == -EAGAIN)
+		dev_info(charger->dev, "charging policy waiting for valid battery/source sample; retry in 1000 ms\n");
+	else if (error)
+		dev_info(charger->dev, "charging policy deferred: %d; retry scheduled\n", error);
+}
+
 static void j71t_policy_work(struct work_struct *work)
 {
 	struct j71t_charger *charger = container_of(to_delayed_work(work),
@@ -362,9 +388,21 @@ static void j71t_policy_work(struct work_struct *work)
 		charger->input_code = charger->input_codes[index];
 		/* Input regulation still bounds the total USB draw. */
 		charger->charge_code = j71t_charge_code(charger->budget_ua);
-		if (j71t_enable(charger))
+		ret = j71t_enable(charger);
+		if (ret)
 			j71t_revoke_override(charger);
 	}
+	if (charger->faulted)
+		ret = -EIO;
+	else if (charger->disabled)
+		ret = -ECANCELED;
+	else if (!charger->calibrated)
+		ret = -ENODATA;
+	else if (charger->active)
+		ret = 0;
+	else if (!ret && index < 0)
+		ret = source_ua < 0 ? source_ua : -ERANGE;
+	j71t_policy_log(charger, ret);
 	if (!charger->stopping)
 		mod_delayed_work(system_power_efficient_wq, &charger->work,
 				 msecs_to_jiffies(charger->saved && !charger->active ? 100 : 1000));
