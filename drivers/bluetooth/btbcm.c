@@ -680,7 +680,11 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	fw_name_count++;
 
 	for (i = 0; i < fw_name_count; i++) {
-		err = firmware_request_nowarn(&fw, fw_name[i], &hdev->dev);
+		/* J71t RAM boots have no firmware helper; fail each name fast. */
+		if (board_name && !strcmp(board_name, "apple,j71t"))
+			err = request_firmware_direct(&fw, fw_name[i], &hdev->dev);
+		else
+			err = firmware_request_nowarn(&fw, fw_name[i], &hdev->dev);
 		if (err == 0) {
 			bt_dev_info(hdev, "%s '%s' Patch",
 				    hw_name ? hw_name : "BCM", fw_name[i]);

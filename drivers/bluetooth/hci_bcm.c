@@ -1650,6 +1650,7 @@ static struct bcm_device_data bcm4355_j172_device_data = {
 	.no_early_set_baudrate = true,
 	.wake_before_power_cycle = true,
 	.set_baudrate_before_patch = true,
+	/* Also required by J71t BCM4355C0; the core logs active quirks. */
 	.broken_read_transmit_power = true,
 	.fixup_le_adv_report_evt_type = true,
 };
