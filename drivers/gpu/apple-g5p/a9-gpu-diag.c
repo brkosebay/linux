@@ -7,6 +7,7 @@
 #include <crypto/sha2.h>
 #include <linux/capability.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -15,7 +16,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
-#include "ldr.h"
+#include "pack.h"
 
 #define G5P_MSLVDATAX 0x0a00
 #define G5P_MSLVDATAT 0x0a08
@@ -37,6 +38,8 @@ struct g5p_diag {
 	struct mutex lock;
 	bool powered;
 	bool loaded;
+	struct g5p_ldr_image image;
+	dma_addr_t image_dma;
 	bool fender_ready;
 	bool id_checked;
 	int last_result;
@@ -114,7 +117,7 @@ static int g5p_meta_read(struct g5p_diag *g, u32 addr, u32 *out)
 	return 0;
 }
 
-static int g5p_meta_write(struct g5p_diag *g, u32 addr, u32 value)
+static int __maybe_unused g5p_meta_write(struct g5p_diag *g, u32 addr, u32 value)
 {
 	int ret = g5p_sp_wait(g);
 
@@ -127,32 +130,7 @@ static int g5p_meta_write(struct g5p_diag *g, u32 addr, u32 value)
 	return g5p_sp_wait(g);
 }
 
-static int g5p_emit_ldr(void *ctx, enum g5p_ldr_op op, u32 addr, u32 size,
-			const u8 *data)
-{
-	struct g5p_diag *g = ctx;
-	u32 i;
-	int ret;
-
-	/* Starting threads is a separate operation after init publication. */
-	if (op == G5P_START)
-		return 0;
-	dev_info(g->dev, "LDR op=%u addr=%08x size=%u\n", op, addr, size);
-	for (i = 0; i < size; i += op == G5P_CONFIG ? 12 : 4) {
-		u32 dest = op == G5P_CONFIG ? g5p_le32(data + i + 4) : addr + i;
-		u32 value = op == G5P_CONFIG ? g5p_le32(data + i + 8) :
-			op == G5P_ZERO ? 0 : g5p_le32(data + i);
-
-		ret = g5p_meta_write(g, dest, value);
-		if (ret)
-			return ret;
-		if (!(i & 0xfff))
-			cond_resched();
-	}
-	return 0;
-}
-
-static int g5p_firmware(struct g5p_diag *g, bool upload)
+static int g5p_firmware(struct g5p_diag *g, bool prepare)
 {
 	static const u8 expected[SHA256_DIGEST_SIZE] = {
 		0x33, 0xae, 0x20, 0xcb, 0xbe, 0x24, 0x98, 0xe4,
@@ -177,9 +155,26 @@ static int g5p_firmware(struct g5p_diag *g, bool upload)
 	if (ret)
 		goto out;
 	dev_info(g->dev, "firmware SHA256 and all 94 LDR records validated\n");
-	if (upload) {
-		ret = g5p_ldr_walk(fw->data, fw->size, g5p_emit_ldr, g);
-		g->loaded = !ret;
+	if (prepare && !g->loaded) {
+		g->image.data = dmam_alloc_coherent(g->dev, G5P_IMAGE_SIZE,
+						  &g->image_dma, GFP_KERNEL);
+		if (!g->image.data) {
+			ret = -ENOMEM;
+			goto out;
+		}
+		ret = g5p_ldr_walk(fw->data, fw->size, g5p_pack_record, &g->image);
+		if (!ret && g->image.config_count != G5P_CONFIG_WRITES)
+			ret = -EINVAL;
+		if (ret) {
+			dmam_free_coherent(g->dev, G5P_IMAGE_SIZE,
+					   g->image.data, g->image_dma);
+			memset(&g->image, 0, sizeof(g->image));
+			goto out;
+		}
+		g->loaded = true;
+		dev_info(g->dev, "LDR packed into %x DMA bytes at %pad; T1 PC=%08x SP=%08x\n",
+			 G5P_IMAGE_SIZE, &g->image_dma, g->image.t1_pc, g->image.t1_sp);
+		dev_info(g->dev, "not executable: GPU PTEs, boot config and shared init not installed\n");
 	}
 out:
 	release_firmware(fw);
@@ -248,8 +243,8 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 	if (!capable(CAP_SYS_RAWIO))
 		return -EPERM;
 	guard(mutex)(&g->lock);
-	if (sysfs_streq(buf, "validate")) {
-		ret = g5p_firmware(g, false);
+	if (sysfs_streq(buf, "validate") || sysfs_streq(buf, "prepare")) {
+		ret = g5p_firmware(g, sysfs_streq(buf, "prepare"));
 		goto out;
 	}
 	if (!sysfs_streq(buf, "id") && !sysfs_streq(buf, "sample") &&
@@ -265,7 +260,7 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 		ret = g->id_checked ? g5p_sample(g) : -EPERM;
 	} else {
 		/* External backing / reset sequence must be proven first. */
-		dev_err(dev, "load withheld: META backing/MMU setup not established\n");
+		dev_err(dev, "load withheld: GPU PTEs and shared init not installed\n");
 		ret = -EOPNOTSUPP;
 	}
 out:
@@ -298,6 +293,8 @@ static int g5p_probe(struct platform_device *pdev)
 	}
 	g->rgx = g->window[0];
 	platform_set_drvdata(pdev, g);
+	if (dma_set_mask_and_coherent(dev, DMA_BIT_MASK(40)))
+		return -ENODEV;
 	pm_runtime_enable(dev);
 	dev_info(dev, "mapped both ADT windows; awaiting explicit command\n");
 	return 0;
