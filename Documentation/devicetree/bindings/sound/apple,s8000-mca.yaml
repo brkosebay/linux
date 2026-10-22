@@ -71,6 +71,18 @@ properties:
         - description: value
     description: i2s-switch registers to set while the port runs.
 
+  apple,sio-dma-config:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    items:
+      - description: SmartIO transfer control for 16-bit samples
+      - description: SmartIO transfer control for 32-bit samples
+      - description: shim timeout
+      - description: shim FIFO size, bytes
+      - description: shim trigger level, bytes
+    description:
+      The SmartIO shim words of this MCA's DMA endpoint (Apple ADT
+      dma-channels).
+
   apple,pio-fifo-offset:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: Experimental CPU-writable TX FIFO register (no DMA).
