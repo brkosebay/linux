@@ -667,6 +667,8 @@ struct nvme_ctrl_ops {
 	void (*print_device_info)(struct nvme_ctrl *ctrl);
 	bool (*supports_pci_p2pdma)(struct nvme_ctrl *ctrl);
 	unsigned long (*get_virt_boundary)(struct nvme_ctrl *ctrl, bool is_admin);
+	/* Optional: transport-forced read-only namespaces */
+	bool (*ns_is_readonly)(struct nvme_ctrl *ctrl, u32 nsid);
 };
 
 /*

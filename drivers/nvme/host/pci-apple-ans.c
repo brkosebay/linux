@@ -59,6 +59,18 @@ struct apple_ans_nvme_req {
 	u64 pages[APPLE_ANS_NVMMU_MAX_PAGES];
 };
 
+/*
+ * NSID 1 is the data namespace (iOS disk0: the APFS container). The others
+ * hold factory and boot data a DFU restore can't bring back. On j71t:
+ * 2 LLB/iBoot, 3 syscfg, 4 iPCB, 5 NVRAM, 6 effaceable storage, 7 unused.
+ */
+#define APPLE_ANS_DATA_NSID	1
+
+static bool apple_ans_unlock_system_namespaces;
+module_param(apple_ans_unlock_system_namespaces, bool, 0444);
+MODULE_PARM_DESC(apple_ans_unlock_system_namespaces,
+	"Apple ANS: DANGEROUS. Allow commands that can change namespaces other than NSID 1 (LLB/iBoot, syscfg, NVRAM, effaceable storage) or the whole controller (format/sanitize all, firmware, namespace management, security, vendor commands). Default N; boot-time only.");
+
 static bool apple_ans_dart_hmb;
 module_param(apple_ans_dart_hmb, bool, 0444);
 MODULE_PARM_DESC(apple_ans_dart_hmb,
@@ -180,6 +192,71 @@ bool nvme_pci_apple_ans_match(struct pci_dev *pdev)
 	return np && of_match_node(nvme_pci_apple_ans_hosts, np);
 }
 
+/*
+ * System-namespace guard, on top of (and independent of) the
+ * CONFIG_NVME_PCI_READ_ONLY allowlist. Called for every command at
+ * submission and again when it is copied into the SQ (under the SQ lock).
+ */
+static bool nvme_pci_apple_ans_cmd_allowed(struct nvme_dev *dev, u16 qid,
+					   const struct nvme_command *cmd)
+{
+	u32 nsid = le32_to_cpu(cmd->common.nsid);
+	u8 opcode = cmd->common.opcode;
+	bool ok;
+
+	if (apple_ans_unlock_system_namespaces)
+		return true;
+
+	if (qid) {
+		/* I/O: anything on NSID 1, only reads elsewhere */
+		ok = nsid == APPLE_ANS_DATA_NSID || opcode == nvme_cmd_read ||
+		     opcode == nvme_cmd_flush;
+	} else {
+		switch (opcode) {
+		case nvme_admin_delete_sq:
+		case nvme_admin_create_sq:
+		case nvme_admin_get_log_page:
+		case nvme_admin_delete_cq:
+		case nvme_admin_create_cq:
+		case nvme_admin_identify:
+		case nvme_admin_abort_cmd:
+		case nvme_admin_get_features:
+		case nvme_admin_async_event:
+		case nvme_admin_keep_alive:
+			ok = true;
+			break;
+		case nvme_admin_set_features:
+			/* controller-wide or the data namespace only */
+			ok = nsid == 0 || nsid == APPLE_ANS_DATA_NSID;
+			break;
+		case nvme_admin_format_nvm:
+			ok = nsid == APPLE_ANS_DATA_NSID;
+			break;
+		default:
+			/*
+			 * Sanitize, firmware download/commit, namespace
+			 * management/attachment, security, directives,
+			 * self-test and vendor-specific (Apple NAND tunnel)
+			 * commands can reach every namespace.
+			 */
+			ok = false;
+			break;
+		}
+	}
+
+	if (!ok)
+		dev_err_ratelimited(dev->dev,
+				    "Apple ANS: refused opcode %#x for nsid %u on qid %u: system namespaces are protected\n",
+				    opcode, nsid, qid);
+	return ok;
+}
+
+static bool nvme_pci_apple_ans_ns_readonly(struct nvme_dev *dev, u32 nsid)
+{
+	return !apple_ans_unlock_system_namespaces &&
+	       nsid != APPLE_ANS_DATA_NSID;
+}
+
 static int nvme_pci_apple_ans_init(struct nvme_dev *dev, int node)
 {
 	struct apple_ans_nvme *ans;
@@ -190,6 +267,14 @@ static int nvme_pci_apple_ans_init(struct nvme_dev *dev, int node)
 
 	spin_lock_init(&ans->req_lock);
 	dev->dma_data = ans;
+
+	if (apple_ans_unlock_system_namespaces)
+		dev_warn(dev->dev,
+			 "Apple ANS: system namespaces UNLOCKED (nvme.apple_ans_unlock_system_namespaces=1)\n");
+	else
+		dev_info(dev->dev,
+			 "Apple ANS: namespaces other than NSID %u are read-only and only safe admin commands are sent\n",
+			 APPLE_ANS_DATA_NSID);
 	return 0;
 }
 
@@ -912,6 +997,8 @@ const struct nvme_pci_dma_ops nvme_pci_apple_ans_ops = {
 	.prepare_enable = nvme_pci_apple_ans_prepare_enable,
 	.write_cc	= nvme_pci_apple_ans_write_cc,
 	.read_csts	= nvme_pci_apple_ans_read_csts,
+	.cmd_allowed	= nvme_pci_apple_ans_cmd_allowed,
+	.ns_readonly	= nvme_pci_apple_ans_ns_readonly,
 	.map_data	= nvme_pci_apple_ans_map_data,
 	.unmap_data	= nvme_pci_apple_ans_unmap_data,
 	.queue_depth	= nvme_pci_apple_ans_queue_depth,

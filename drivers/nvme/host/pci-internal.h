@@ -40,6 +40,14 @@ struct nvme_pci_dma_ops {
 	/* Optional: replace the CC write and the CSTS read (bring-up checks) */
 	int (*write_cc)(struct nvme_dev *dev, u32 cc);
 	int (*read_csts)(struct nvme_dev *dev, u32 *csts);
+	/*
+	 * Optional, independent of CONFIG_NVME_PCI_READ_ONLY: refuse commands
+	 * (called under the SQ lock, must not sleep) and force namespaces
+	 * read-only.
+	 */
+	bool (*cmd_allowed)(struct nvme_dev *dev, u16 qid,
+			    const struct nvme_command *cmd);
+	bool (*ns_readonly)(struct nvme_dev *dev, u32 nsid);
 	blk_status_t (*map_data)(struct request *req);
 	bool (*unmap_data)(struct request *req);
 	u32 (*queue_depth)(struct nvme_dev *dev, u32 depth);

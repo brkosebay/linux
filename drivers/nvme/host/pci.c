@@ -601,8 +601,8 @@ static inline void nvme_write_sq_db(struct nvme_queue *nvmeq, bool write_sq)
  * management, security send, directives, vendor-specific opcodes, saved
  * features) is refused before it reaches the submission queue.
  */
-static bool nvme_pci_cmd_allowed(const struct nvme_queue *nvmeq,
-				 const struct nvme_command *cmd)
+static bool nvme_pci_ro_cmd_allowed(const struct nvme_queue *nvmeq,
+				    const struct nvme_command *cmd)
 {
 	u32 cdw10;
 
@@ -653,6 +653,24 @@ static bool nvme_pci_cmd_allowed(const struct nvme_queue *nvmeq,
 	default:
 		return false;
 	}
+}
+
+/*
+ * Both gates: the CONFIG_NVME_PCI_READ_ONLY allowlist above and the
+ * device's own policy (Apple ANS: protected system namespaces), which
+ * holds even without CONFIG_NVME_PCI_READ_ONLY.
+ */
+static bool nvme_pci_cmd_allowed(const struct nvme_queue *nvmeq,
+				 const struct nvme_command *cmd)
+{
+	const struct nvme_pci_dma_ops *ops = nvmeq->dev->dma_ops;
+
+	if (!nvme_pci_ro_cmd_allowed(nvmeq, cmd))
+		return false;
+	if (ops && ops->cmd_allowed &&
+	    !ops->cmd_allowed(nvmeq->dev, nvmeq->qid, cmd))
+		return false;
+	return true;
 }
 
 static inline void nvme_sq_copy_cmd(struct nvme_queue *nvmeq,
@@ -1373,8 +1391,9 @@ static blk_status_t nvme_prep_rq(struct request *req)
 	if (unlikely(!nvme_pci_cmd_allowed(req->mq_hctx->driver_data,
 					   &iod->cmd))) {
 		dev_err_ratelimited(nvme_req(req)->ctrl->device,
-				    "read-only: refused opcode %#x on %s queue\n",
+				    "read-only: refused opcode %#x nsid %u on %s queue\n",
 				    iod->cmd.common.opcode,
+				    le32_to_cpu(iod->cmd.common.nsid),
 				    nvme_req(req)->ctrl->admin_q == req->q ?
 				    "admin" : "I/O");
 		ret = BLK_STS_IOERR;
@@ -3517,6 +3536,14 @@ static int nvme_pci_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val)
 	return 0;
 }
 
+static bool nvme_pci_ns_is_readonly(struct nvme_ctrl *ctrl, u32 nsid)
+{
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+
+	return dev->dma_ops && dev->dma_ops->ns_readonly &&
+	       dev->dma_ops->ns_readonly(dev, nsid);
+}
+
 static int nvme_pci_reg_read64(struct nvme_ctrl *ctrl, u32 off, u64 *val)
 {
 	*val = lo_hi_readq(to_nvme_dev(ctrl)->bar + off);
@@ -3574,6 +3601,7 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 	.print_device_info	= nvme_pci_print_device_info,
 	.supports_pci_p2pdma	= nvme_pci_supports_pci_p2pdma,
 	.get_virt_boundary	= nvme_pci_get_virt_boundary,
+	.ns_is_readonly		= nvme_pci_ns_is_readonly,
 };
 
 static int nvme_dev_map(struct nvme_dev *dev)
