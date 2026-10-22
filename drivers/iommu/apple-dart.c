@@ -67,6 +67,16 @@
 
 #define DART_S5L8960X_TTBR	0x40
 
+/*
+ * Written by iOS (AppleS5L8960XDART) at every hardware init, from the ADT
+ * properties of the same names: the error reflector is the page that
+ * faulting transactions are redirected to, so they complete instead of
+ * stalling the requester.
+ */
+#define DART_S5L8960X_DIAG_CONFIG	0x20
+#define DART_S5L8960X_ERROR_REFLECTOR	0x24
+#define DART_S5L8960X_FETCH_CONFIG	0x30
+
 /* T8020/T6000 registers */
 
 #define DART_T8020_STREAM_COMMAND 0x20
@@ -220,6 +230,13 @@ struct apple_dart {
 
 	u32 save_tcr[DART_MAX_STREAMS];
 	u32 save_ttbr[DART_MAX_STREAMS][DART_MAX_TTBR];
+
+	/* S5L8960X: apple,error-reflector >> 12 (0 = leave alone), configs */
+	u32 error_reflector;
+	u32 fetch_config;
+	u32 diag_config;
+	u32 has_fetch_config : 1;
+	u32 has_diag_config : 1;
 };
 
 struct apple_dart_hw {
@@ -561,6 +578,19 @@ apple_dart_t8110_hw_invalidate_tlb(struct apple_dart_stream_map *stream_map)
 		stream_map, DART_T8110_TLB_CMD_OP_FLUSH_SID);
 }
 
+static void apple_dart_s5l8960x_hw_config(struct apple_dart *dart)
+{
+	if (dart->error_reflector)
+		writel(dart->error_reflector,
+		       dart->regs + DART_S5L8960X_ERROR_REFLECTOR);
+	if (dart->has_fetch_config)
+		writel(dart->fetch_config,
+		       dart->regs + DART_S5L8960X_FETCH_CONFIG);
+	if (dart->has_diag_config)
+		writel(dart->diag_config,
+		       dart->regs + DART_S5L8960X_DIAG_CONFIG);
+}
+
 static int apple_dart_hw_reset(struct apple_dart *dart)
 {
 	u32 config;
@@ -595,8 +625,10 @@ static int apple_dart_hw_reset(struct apple_dart *dart)
 	 * S5L8960X DART only supports TLB invalidation if translation is
 	 * enabled.
 	 */
-	if (dart->hw->type == DART_S5L8960X)
+	if (dart->hw->type == DART_S5L8960X) {
+		apple_dart_s5l8960x_hw_config(dart);
 		return 0;
+	}
 
 	return dart->hw->invalidate_tlb(&stream_map);
 }
@@ -674,6 +706,21 @@ static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
 				gather);
 }
 
+static void apple_dart_s5l8960x_attach_config(struct apple_dart *dart)
+{
+	u32 reflector = readl(dart->regs + DART_S5L8960X_ERROR_REFLECTOR);
+	u32 fetch = readl(dart->regs + DART_S5L8960X_FETCH_CONFIG);
+	u32 diag = readl(dart->regs + DART_S5L8960X_DIAG_CONFIG);
+
+	/* Shows whether the DART kept its probe-time setup */
+	dev_info(dart->dev,
+		 "attach: TCR %#x reflector %#x fetch %#x diag %#x error %#x (re-applying %#x/%#x/%#x)\n",
+		 readl(dart->regs + DART_S5L8960X_TCR), reflector, fetch, diag,
+		 readl(dart->regs + DART_S5L8960X_ERROR), dart->error_reflector,
+		 dart->fetch_config, dart->diag_config);
+	apple_dart_s5l8960x_hw_config(dart);
+}
+
 static void
 apple_dart_setup_translation(struct apple_dart_domain *domain,
 			     struct apple_dart_stream_map *stream_map)
@@ -687,6 +734,15 @@ apple_dart_setup_translation(struct apple_dart_domain *domain,
 				       pgtbl_cfg->apple_dart_cfg.ttbr[i]);
 	for (; i < stream_map->dart->hw->ttbr_count; ++i)
 		apple_dart_hw_clear_ttbr(stream_map, i);
+
+	/*
+	 * A DART inside a PCIe port loses its state when the port is powered
+	 * up after the DART probed (iOS re-runs its hardware init whenever the
+	 * port marks the DART active). Re-apply the global setup here, which
+	 * runs when an endpoint is attached, i.e. after its link came up.
+	 */
+	if (stream_map->dart->hw->type == DART_S5L8960X)
+		apple_dart_s5l8960x_attach_config(stream_map->dart);
 
 	apple_dart_hw_enable_translation(stream_map,
 					 pgtbl_cfg->apple_dart_cfg.n_levels);
@@ -1301,6 +1357,36 @@ static irqreturn_t apple_dart_t8110_irq(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
+static int apple_dart_s5l8960x_parse_config(struct apple_dart *dart)
+{
+	struct device_node *np = dart->dev->of_node;
+	u64 reflector;
+
+	if (!of_property_read_u64(np, "apple,error-reflector", &reflector)) {
+		if (!reflector || !IS_ALIGNED(reflector, SZ_4K) ||
+		    reflector >> 12 > U32_MAX) {
+			dev_err(dart->dev, "bad apple,error-reflector %#llx\n",
+				reflector);
+			return -EINVAL;
+		}
+		dart->error_reflector = reflector >> 12;
+	}
+	dart->has_fetch_config = !of_property_read_u32(np, "apple,fetch-config",
+						       &dart->fetch_config);
+	dart->has_diag_config = !of_property_read_u32(np, "apple,diag-config",
+						      &dart->diag_config);
+
+	dev_info(dart->dev,
+		 "boot state: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x\n",
+		 readl(dart->regs + DART_S5L8960X_TCR),
+		 readl(dart->regs + DART_S5L8960X_ERROR_REFLECTOR),
+		 readl(dart->regs + DART_S5L8960X_FETCH_CONFIG),
+		 readl(dart->regs + DART_S5L8960X_DIAG_CONFIG),
+		 readl(dart->regs + DART_S5L8960X_ERROR),
+		 readl(dart->regs + DART_S5L8960X_ERROR_ADDR));
+	return 0;
+}
+
 static int apple_dart_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -1379,6 +1465,12 @@ static int apple_dart_probe(struct platform_device *pdev)
 			dart->num_streams, DART_MAX_STREAMS);
 		ret = -EINVAL;
 		goto err_clk_disable;
+	}
+
+	if (dart->hw->type == DART_S5L8960X) {
+		ret = apple_dart_s5l8960x_parse_config(dart);
+		if (ret)
+			goto err_clk_disable;
 	}
 
 	ret = apple_dart_hw_reset(dart);

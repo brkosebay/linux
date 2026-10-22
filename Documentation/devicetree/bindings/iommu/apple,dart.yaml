@@ -61,6 +61,25 @@ properties:
   power-domains:
     maxItems: 1
 
+  apple,error-reflector:
+    $ref: /schemas/types.yaml#/definitions/uint64
+    description:
+      S5L8960X-style DARTs only. Physical address of the page that faulting
+      transactions are redirected to, so that they complete instead of
+      stalling the master. Taken from the ADT property of the same name.
+
+  apple,fetch-config:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      S5L8960X-style DARTs only. Value for the table fetch configuration
+      register, from the ADT property "fetch-config".
+
+  apple,diag-config:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      S5L8960X-style DARTs only. Value for the diagnostic configuration
+      register, from the ADT property "diag-config".
+
 required:
   - compatible
   - reg
