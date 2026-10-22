@@ -1677,6 +1677,9 @@ static const struct of_device_id bcm_bluetooth_of_match[] = {
 	{ .compatible = "brcm,bcm43438-bt", .data = &bcm43438_device_data },
 	{ .compatible = "brcm,bcm4349-bt", .data = &bcm43438_device_data },
 	{ .compatible = "brcm,bcm43540-bt", .data = &bcm4354_device_data },
+	/* A9 module revision is selected by ROM and board-specific firmware. */
+	{ .compatible = "apple,j71t-bcm4355-bt",
+	  .data = &bcm4355_j172_device_data },
 	{ .compatible = "apple,j172-bcm4355c1-bt",
 	  .data = &bcm4355_j172_device_data },
 	{ .compatible = "brcm,bcm4355c1-bt", .data = &bcm4355_device_data },

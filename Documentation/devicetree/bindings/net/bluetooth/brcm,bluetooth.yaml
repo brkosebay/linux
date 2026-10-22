@@ -15,6 +15,7 @@ description:
 properties:
   compatible:
     oneOf:
+      - const: apple,j71t-bcm4355-bt
       - items:
           - const: apple,j172-bcm4355c1-bt
           - const: brcm,bcm4355c1-bt
