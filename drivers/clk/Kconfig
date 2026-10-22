@@ -58,6 +58,14 @@ config LMK04832
 	  Say yes here to build support for Texas Instruments' LMK04832 Ultra
 	  Low-Noise JESD204B Compliant Clock Jitter Cleaner With Dual Loop PLLs
 
+config COMMON_CLK_APPLE_S8000_TOUCH
+	tristate "Apple S8000 touchscreen clock"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on OF
+	select MFD_SYSCON
+	help
+	  S8000 PMGR TCLK gate and divider for the J71t N1 touchscreen.
+
 config COMMON_CLK_APPLE_NCO
 	tristate "Clock driver for Apple SoC NCOs"
 	depends on ARCH_APPLE || COMPILE_TEST
