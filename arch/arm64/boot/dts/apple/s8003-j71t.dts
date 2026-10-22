@@ -29,12 +29,19 @@
 	status = "okay";
 };
 
-&pcie0_dart1 {
-	status = "okay";
-};
-
 &pcie0 {
 	apple,lane-cfg = <1>;
 	apple,nvme-hmb = <&nvme_hmb>;
+	/* live ADT nvme-mmu0 invalidate-fifo-workaround (added by iBoot) */
+	apple,nvmmu-invalidate-fifo = <1>;
 	status = "okay";
+};
+
+/*
+ * The BCM4355 needs a power sequence (PMU-controlled VDD, wlan-uart
+ * provider) before its link can train; until that exists, leave port 1
+ * and its DART off.
+ */
+&pcie0_port1 {
+	status = "disabled";
 };
