@@ -330,11 +330,6 @@ struct apple_dart_domain {
 struct apple_dart_master_cfg {
 	/* Intersection of DART capabilitles */
 	u32 supports_bypass : 1;
-	/*
-	 * The window came from 5-cell "iommus" args. S5L8960X then indexes
-	 * the page tables relative to the window start (see finalize).
-	 */
-	u32 offset_window : 1;
 
 	/*
 	 * DMA aperture start and end to be overridden by "iommus"' phandle
@@ -720,14 +715,21 @@ static void apple_dart_s5l8960x_attach_config(struct apple_dart *dart)
 	u32 reflector = readl(dart->regs + DART_S5L8960X_ERROR_REFLECTOR);
 	u32 fetch = readl(dart->regs + DART_S5L8960X_FETCH_CONFIG);
 	u32 diag = readl(dart->regs + DART_S5L8960X_DIAG_CONFIG);
+	u32 error = readl(dart->regs + DART_S5L8960X_ERROR);
 
-	/* Shows whether the DART kept its probe-time setup */
+	/*
+	 * Shows whether the DART kept its probe-time setup. Behind the A9
+	 * PCIe port it doesn't: it reads all-ones until the port powers up and
+	 * comes back in its reset state, with an error status left over from
+	 * before Linux. Clear that so a later read means a new fault.
+	 */
 	dev_info(dart->dev,
-		 "attach: TCR %#x reflector %#x fetch %#x diag %#x error %#x (re-applying %#x/%#x/%#x)\n",
+		 "attach: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x (re-applying %#x/%#x/%#x, clearing the error)\n",
 		 readl(dart->regs + DART_S5L8960X_TCR), reflector, fetch, diag,
-		 readl(dart->regs + DART_S5L8960X_ERROR), dart->error_reflector,
-		 dart->fetch_config, dart->diag_config);
+		 error, readl(dart->regs + DART_S5L8960X_ERROR_ADDR),
+		 dart->error_reflector, dart->fetch_config, dart->diag_config);
 	apple_dart_s5l8960x_hw_config(dart);
+	writel(error, dart->regs + DART_S5L8960X_ERROR);
 }
 
 static void
@@ -798,16 +800,27 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 	}
 
 	/*
-	 * An apple,dma-range window only restricts the IOVA allocator: the
-	 * S5L8960X walks its tables with the raw 32-bit IOVA (iOS decodes a
-	 * fault address as TTBR = IOVA[31:30], L1 = IOVA[29:21], L2 =
-	 * IOVA[20:12] with no base subtracted, and its vm-offset only sets
-	 * where its allocator starts), so don't strip the window base then.
+	 * S5L8960X sees IOVAs relative to the window base: behind the A9 PCIe
+	 * root complex, IOVA 0xbbffe000 (window 0x80000000) reaches the DART as
+	 * 0x3bffe000 (device log, 2026-10-22). Index the tables the same way.
+	 * Masking the base off equals subtracting it only if the base is
+	 * aligned beyond the window size.
 	 */
-	if (dart->hw->type == DART_S5L8960X && cfg->offset_window)
+	if (dart->hw->type == DART_S5L8960X) {
+		if (cfg->dma_min &&
+		    cfg->dma_max - cfg->dma_min >= (cfg->dma_min & -cfg->dma_min)) {
+			dev_err(dart->dev,
+				"DMA window %pad..%pad is not base-aligned\n",
+				&cfg->dma_min, &cfg->dma_max);
+			free_io_pgtable_ops(dart_domain->pgtbl_ops);
+			dart_domain->pgtbl_ops = NULL;
+			ret = -EINVAL;
+			goto done;
+		}
 		dart_domain->mask = ~cfg->dma_min;
-	else
+	} else {
 		dart_domain->mask = DMA_BIT_MASK(pgtbl_cfg.ias);
+	}
 
 	dart_domain->domain.pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
 	dart_domain->domain.geometry.aperture_start = cfg->dma_min;
@@ -1035,7 +1048,6 @@ static int apple_dart_of_xlate(struct device *dev,
 			return -ENOMEM;
 		/* Will be ANDed with DART capabilities */
 		cfg->supports_bypass = true;
-		cfg->offset_window = args->args_count == 5;
 		/* Will be merged with other DARTs to the common range. */
 		cfg->dma_min = dma_min;
 		cfg->dma_max = dma_max;
@@ -1048,7 +1060,6 @@ static int apple_dart_of_xlate(struct device *dev,
 		}
 		cfg->dma_min = max(dma_min, cfg->dma_min);
 		cfg->dma_max = min(dma_max, cfg->dma_max);
-		cfg->offset_window |= args->args_count == 5;
 	}
 	dev_iommu_priv_set(dev, cfg);
 
@@ -1284,13 +1295,15 @@ static irqreturn_t apple_dart_s5l8960x_irq(int irq, void *dev)
 	/*
 	 * The DART's own device has no iommu master config (dev->iommu is
 	 * NULL), so don't look one up here: doing so turned every fault into
-	 * a NULL dereference in hard IRQ context, i.e. a silent panic. iOS
-	 * prints this register as the IOVA without adding any window base.
+	 * a NULL dereference in hard IRQ context, i.e. a silent panic. The
+	 * register holds the address as the DART saw it, i.e. relative to the
+	 * window base; add apple,dma-range's base back for the device's IOVA.
 	 */
 	dev_err_ratelimited(
 		dart->dev,
-		"translation fault: status:0x%x stream:%d code:0x%x (%s) at 0x%x\n",
-		error, stream_idx, error_code, fault_name, addr);
+		"translation fault: status:0x%x stream:%d code:0x%x (%s) at 0x%x (IOVA %#llx)\n",
+		error, stream_idx, error_code, fault_name, addr,
+		(u64)addr | dart->dma_min);
 
 	writel(error, dart->regs + DART_S5L8960X_ERROR);
 	return IRQ_HANDLED;
@@ -1431,6 +1444,7 @@ static int apple_dart_s5l8960x_parse_config(struct apple_dart *dart)
 	dart->has_diag_config = !of_property_read_u32(np, "apple,diag-config",
 						      &dart->diag_config);
 
+	/* All-ones: the DART isn't powered yet (A9 PCIe: until the port is) */
 	dev_info(dart->dev,
 		 "boot state: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x\n",
 		 readl(dart->regs + DART_S5L8960X_TCR),
