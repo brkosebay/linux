@@ -296,7 +296,8 @@ static int apple_als_load_calibration(struct tsl2583_chip *chip)
 
 	if (!device_property_present(dev, "nvmem-cells") &&
 	    !device_property_read_string(dev, "firmware-name", &fw_name)) {
-		ret = request_firmware(&fw, fw_name, dev);
+		/* Missing calibration must not wait for a userspace helper. */
+		ret = request_firmware_direct(&fw, fw_name, dev);
 		if (ret)
 			return dev_err_probe(dev, ret, "failed to load LSCI file\n");
 		len = fw->size;
