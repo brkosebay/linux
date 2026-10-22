@@ -73,7 +73,7 @@
 		compatible = "gpu,s8003";
 		reg = <0x2 0x01000000 0x0 0x100000>,
 		      <0x2 0x01e00000 0x0 0x100000>;
-		reg-names = "adt-r0", "adt-r1";
+		reg-names = "rgx", "fender";
 		power-domains = <&ps_gfx>;
 		interrupts = <AIC_IRQ 170 IRQ_TYPE_LEVEL_HIGH>,
 			     <AIC_IRQ 171 IRQ_TYPE_LEVEL_HIGH>,

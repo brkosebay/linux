@@ -29,11 +29,6 @@ static bool enable;
 module_param(enable, bool, 0400);
 MODULE_PARM_DESC(enable, "Register experimental GPU diagnostic (default false)");
 
-/* Still unresolved offline; never silently choose an address space. */
-static unsigned int rgx_window = 2;
-module_param(rgx_window, uint, 0400);
-MODULE_PARM_DESC(rgx_window, "RGX DT register window (0 or 1, default unset)");
-
 struct g5p_diag {
 	struct device *dev;
 	void __iomem *window[2];
@@ -42,6 +37,8 @@ struct g5p_diag {
 	struct mutex lock;
 	bool powered;
 	bool loaded;
+	bool fender_ready;
+	bool id_checked;
 	int last_result;
 	u32 words_written;
 };
@@ -58,6 +55,34 @@ static int g5p_power(struct g5p_diag *g)
 		return ret;
 	g->powered = true;
 	dev_info(g->dev, "gfx runtime PM active\n");
+	return 0;
+}
+
+static int g5p_fender_wake(struct g5p_diag *g)
+{
+	void __iomem *fender = g->window[1];
+	u32 value;
+	int ret;
+
+	if (g->fender_ready)
+		return 0;
+	ret = g5p_power(g);
+	if (ret)
+		return ret;
+	dev_info(g->dev, "W R1+10000=ffff0000 (Apple ...6c93fe8)\n");
+	writel(0xffff0000, fender + 0x10000);
+	dev_info(g->dev, "W R1+00000=40000000 (Apple ...6c93ff0)\n");
+	writel(0x40000000, fender);
+	dev_info(g->dev, "W R1+01000=00000011 (Apple ...6c93ff8)\n");
+	writel(0x11, fender + 0x1000);
+	dev_info(g->dev, "poll R1+01000 bit4 clear\n");
+	ret = readl_poll_timeout(fender + 0x1000, value, !(value & BIT(4)),
+				 10, 100000);
+	dev_info(g->dev, "Fender wake status=%08x result=%d\n", value, ret);
+	if (ret)
+		return ret;
+	usleep_range(10, 20);
+	g->fender_ready = true;
 	return 0;
 }
 
@@ -161,7 +186,7 @@ out:
 	return ret;
 }
 
-static int __maybe_unused g5p_sample(struct g5p_diag *g)
+static int g5p_sample(struct g5p_diag *g)
 {
 	u32 value;
 	unsigned int thread, reg;
@@ -184,12 +209,32 @@ static int __maybe_unused g5p_sample(struct g5p_diag *g)
 	return 0;
 }
 
+static int g5p_read_id(struct g5p_diag *g)
+{
+	u32 words[2];
+	static const u32 offsets[] = { 0x20, 0x18 };
+	unsigned int i;
+
+	if (!g->fender_ready)
+		return -EPERM;
+	for (i = 0; i < ARRAY_SIZE(offsets); i++) {
+		dev_info(g->dev, "R R0+%05x\n", offsets[i]);
+		words[i] = readl(g->rgx + offsets[i]);
+		dev_info(g->dev, "R0+%05x=%08x\n", offsets[i], words[i]);
+	}
+	if ((!words[0] && !words[1]) || words[0] == ~0U || words[1] == ~0U)
+		return -ENODEV;
+	g->id_checked = true;
+	return 0;
+}
+
 static ssize_t result_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct g5p_diag *g = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "last=%d powered=%u loaded=%u words=%u\n",
+	return sysfs_emit(buf, "last=%d powered=%u fender=%u id=%u loaded=%u words=%u\n",
 		READ_ONCE(g->last_result), READ_ONCE(g->powered),
+		READ_ONCE(g->fender_ready), READ_ONCE(g->id_checked),
 		READ_ONCE(g->loaded), READ_ONCE(g->words_written));
 }
 static DEVICE_ATTR_RO(result);
@@ -208,19 +253,16 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 		goto out;
 	}
 	if (!sysfs_streq(buf, "id") && !sysfs_streq(buf, "sample") &&
-	    !sysfs_streq(buf, "load")) {
+	    !sysfs_streq(buf, "load") && !sysfs_streq(buf, "wake")) {
 		ret = -EINVAL;
 		goto out;
 	}
-	ret = g5p_power(g);
-	if (ret)
-		goto out;
-	if (sysfs_streq(buf, "id")) {
-		dev_err(dev, "ID reads withheld: experiment 01 wedged R0 before Fender setup\n");
-		ret = -EOPNOTSUPP;
+	if (sysfs_streq(buf, "wake")) {
+		ret = g5p_fender_wake(g);
+	} else if (sysfs_streq(buf, "id")) {
+		ret = g5p_read_id(g);
 	} else if (sysfs_streq(buf, "sample")) {
-		dev_err(dev, "sample withheld: Fender setup not yet established\n");
-		ret = -EOPNOTSUPP;
+		ret = g->id_checked ? g5p_sample(g) : -EPERM;
 	} else {
 		/* External backing / reset sequence must be proven first. */
 		dev_err(dev, "load withheld: META backing/MMU setup not established\n");
@@ -254,8 +296,7 @@ static int g5p_probe(struct platform_device *pdev)
 		if (IS_ERR(g->window[i]))
 			return PTR_ERR(g->window[i]);
 	}
-	if (rgx_window < 2)
-		g->rgx = g->window[rgx_window];
+	g->rgx = g->window[0];
 	platform_set_drvdata(pdev, g);
 	pm_runtime_enable(dev);
 	dev_info(dev, "mapped both ADT windows; awaiting explicit command\n");
