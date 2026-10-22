@@ -104,6 +104,33 @@ static const struct brcmf_feat_fwfeat brcmf_feat_fwfeat_map[] = {
 	{ "01-d2cbb8fd", BIT(BRCMF_FEAT_MONITOR_FMT_HW_RX_HDR) },
 };
 
+/* Features a given firmware build advertises but can't actually do */
+static const struct brcmf_feat_fwfeat brcmf_feat_fwfeat_disable_map[] = {
+	/*
+	 * Apple iOS 16 BCM4355 C0 "FearA" firmware (9.44.205.0.3.50.46):
+	 * answers the "p2p" iovar but fails "p2p_da_override" with -52, so
+	 * every P2P device creation fails. Apple uses AWDL, not Wi-Fi P2P.
+	 */
+	{ "01-9787ef4d", BIT(BRCMF_FEAT_P2P) },
+};
+
+static void brcmf_feat_firmware_disables(struct brcmf_pub *drv)
+{
+	const struct brcmf_feat_fwfeat *e;
+	int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(brcmf_feat_fwfeat_disable_map); i++) {
+		e = &brcmf_feat_fwfeat_disable_map[i];
+		if (strcmp(e->fwid, drv->fwver))
+			continue;
+		for (j = 0; j < BRCMF_FEAT_LAST; j++)
+			if (e->feat_flags & drv->feat_flags & BIT(j))
+				brcmf_info("firmware %s: disabling feature %s\n",
+					   e->fwid, brcmf_feat_names[j]);
+		drv->feat_flags &= ~e->feat_flags;
+	}
+}
+
 static void brcmf_feat_firmware_overrides(struct brcmf_pub *drv)
 {
 	const struct brcmf_feat_fwfeat *e;
@@ -343,6 +370,7 @@ void brcmf_feat_attach(struct brcmf_pub *drvr)
 
 	brcmf_feat_wlc_version_overrides(drvr);
 	brcmf_feat_firmware_overrides(drvr);
+	brcmf_feat_firmware_disables(drvr);
 
 	brcmf_fwvid_feat_attach(ifp);
 
