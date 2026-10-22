@@ -117,7 +117,9 @@
 		brcm,board-type = "apple,feara";
 		/* the staged firmware's antenna SKU (A10 J172 uses the same) */
 		apple,antenna-sku = "XX";
-		/* filled by m1n1 from the ADT */
+		/* filled by m1n1 from the ADT (/chosen mac-address-wifi0) */
 		local-mac-address = [00 00 00 00 00 00];
+		/* cfg80211's country goes to the firmware as <ISO code>/0 */
+		brcm,ccode-map-trivial;
 	};
 };
