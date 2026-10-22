@@ -37,6 +37,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/sizes.h>
+#include <linux/workqueue.h>
 
 #include <linux/apple-ans.h>
 
@@ -110,6 +111,19 @@
 #define H9P_LINK_SPEED_2_5GT		1
 #define H9P_LINK_SPEED_5GT		2
 #define H9P_LINK_SPEED_8GT		3
+
+/*
+ * Ports with a powered endpoint (pwren-gpios, e.g. the Wi-Fi chip) come up
+ * from a work item after probe, so port 0 never waits for their power GPIO
+ * provider. Retry the GPIO every 500 ms for at most 30 s.
+ */
+#define H9P_LATE_PORT_RETRY_MS		500
+#define H9P_LATE_PORT_TRIES		60
+/* Endpoint power: off this long first, then settle this long (A10 J172) */
+#define H9P_PWREN_OFF_MS		100
+#define H9P_PWREN_SETTLE_MS		100
+/* Link attempts per late port (power-cycled in between) */
+#define H9P_LATE_PORT_LINK_TRIES	2
 
 /*
  * S8003 (A9, TSMC). From the iOS 16 AppleS800xPCIe/AppleS8003PCIe kexts; the
@@ -272,6 +286,12 @@ struct apple_h9p_pcie {
 	struct gpio_descs *devpwr;
 	struct pinctrl *pinctrl;
 	u32 enabled_ports;
+	/* Not up yet: brought up by late_work once their power GPIO exists */
+	u32 late_ports;
+	struct gpio_desc *pwren[H9P_NUM_PORTS];
+	struct gpio_desc *devwake[H9P_NUM_PORTS];
+	struct delayed_work late_work;
+	unsigned int late_tries;
 	u32 lane_cfg;
 
 	struct apple_h9p_nvmmu nvmmu;
@@ -1618,12 +1638,117 @@ static int apple_h9p_setup_ports(struct apple_h9p_pcie *pcie)
 		}
 	}
 
-	if (!pcie->enabled_ports)
+	if (!pcie->enabled_ports && !pcie->late_ports)
 		return dev_err_probe(pcie->dev, -ENODEV, "no PCIe link came up\n");
 
 	/* PCIe r6.0 6.6.1: 100 ms after link-up before the first config request */
 	msleep(100);
 	return 0;
+}
+
+/*
+ * Power a late port's endpoint and train its link. PERST# has been asserted
+ * since probe. Returns -EPROBE_DEFER while the power GPIO's provider (e.g.
+ * the PMIC GPIO driver) isn't there yet.
+ */
+static int apple_h9p_late_port(struct apple_h9p_pcie *pcie, unsigned int port)
+{
+	struct device *dev = pcie->dev;
+	struct gpio_desc *pwren;
+	unsigned int try;
+	int ret = 0;
+
+	if (!pcie->pwren[port]) {
+		pwren = devm_fwnode_gpiod_get(dev,
+					      of_fwnode_handle(pcie->port_nodes[port]),
+					      "pwren", GPIOD_ASIS, "PWREN");
+		if (PTR_ERR(pwren) == -EPROBE_DEFER) {
+			if (!pcie->late_tries)
+				dev_info(dev, "port %u: waiting for its power GPIO\n",
+					 port);
+			return -EPROBE_DEFER;
+		}
+		if (IS_ERR(pwren))
+			return dev_err_probe(dev, PTR_ERR(pwren),
+					     "port %u: no power GPIO\n", port);
+		pcie->pwren[port] = pwren;
+	}
+
+	for (try = 0; try < H9P_LATE_PORT_LINK_TRIES; try++) {
+		/* A clean power cycle, PERST# asserted throughout */
+		gpiod_direction_output(pcie->perst[port], 1);
+		ret = gpiod_direction_output(pcie->pwren[port], 0);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "port %u: can't drive power GPIO\n",
+					     port);
+		msleep(H9P_PWREN_OFF_MS);
+		gpiod_set_value_cansleep(pcie->pwren[port], 1);
+		msleep(H9P_PWREN_SETTLE_MS);
+		dev_info(dev, "port %u: endpoint powered (attempt %u)\n", port,
+			 try + 1);
+
+		ret = pcie->hw->setup_port(pcie, port);
+		if (!ret)
+			break;
+	}
+	if (ret) {
+		gpiod_direction_output(pcie->perst[port], 1);
+		gpiod_set_value_cansleep(pcie->pwren[port], 0);
+		dev_err(dev, "port %u: no link after %u power cycles (%d), endpoint powered off\n",
+			port, try, ret);
+		return ret;
+	}
+
+	/* PCIe r6.0 6.6.1: 100 ms after link-up before the first config request */
+	msleep(100);
+	pcie->enabled_ports |= BIT(port);
+	return 0;
+}
+
+static void apple_h9p_late_ports_work(struct work_struct *work)
+{
+	struct apple_h9p_pcie *pcie = container_of(to_delayed_work(work),
+						   struct apple_h9p_pcie,
+						   late_work);
+	unsigned long pending = pcie->late_ports;
+	bool rescan = false, retry = false;
+	unsigned int port;
+	int ret;
+
+	for_each_set_bit(port, &pending, H9P_NUM_PORTS) {
+		ret = apple_h9p_late_port(pcie, port);
+		if (ret == -EPROBE_DEFER) {
+			retry = true;
+			continue;
+		}
+		pcie->late_ports &= ~BIT(port);
+		rescan |= !ret;
+	}
+
+	if (rescan) {
+		pci_lock_rescan_remove();
+		pci_rescan_bus(pcie->bridge->bus);
+		pci_unlock_rescan_remove();
+	}
+
+	if (!retry)
+		return;
+	if (++pcie->late_tries < H9P_LATE_PORT_TRIES) {
+		schedule_delayed_work(&pcie->late_work,
+				      msecs_to_jiffies(H9P_LATE_PORT_RETRY_MS));
+		return;
+	}
+	dev_err(pcie->dev, "ports %#x: power GPIO never appeared, left off\n",
+		pcie->late_ports);
+	pcie->late_ports = 0;
+}
+
+static void apple_h9p_late_ports_cancel(void *data)
+{
+	struct apple_h9p_pcie *pcie = data;
+
+	cancel_delayed_work_sync(&pcie->late_work);
 }
 
 static int apple_h9p_pcie_init(struct pci_config_window *cfg)
@@ -1683,7 +1808,7 @@ static int apple_h9p_pcie_map_resources(struct platform_device *pdev,
 	for (i = 0; i < H9P_NUM_PORTS; i++) {
 		char name[8];
 
-		if (!(pcie->enabled_ports & BIT(i)))
+		if (!((pcie->enabled_ports | pcie->late_ports) & BIT(i)))
 			continue;
 
 		snprintf(name, sizeof(name), "port%u", i);
@@ -1732,7 +1857,10 @@ static int apple_h9p_pcie_parse_ports(struct apple_h9p_pcie *pcie)
 		}
 
 		pcie->port_nodes[port] = of_node_get(np);
-		pcie->enabled_ports |= BIT(port);
+		if (of_property_present(np, "pwren-gpios"))
+			pcie->late_ports |= BIT(port);
+		else
+			pcie->enabled_ports |= BIT(port);
 
 		if (of_property_read_u32(np, "max-link-speed",
 					 &pcie->max_speed[port]))
@@ -1744,7 +1872,7 @@ static int apple_h9p_pcie_parse_ports(struct apple_h9p_pcie *pcie)
 		pcie->nvme_mode[port] = of_property_read_bool(np, "apple,nvme-mode");
 	}
 
-	if (!pcie->enabled_ports)
+	if (!(pcie->enabled_ports | pcie->late_ports))
 		return -ENODEV;
 
 	return devm_add_action_or_reset(dev, apple_h9p_pcie_put_port_nodes,
@@ -1765,7 +1893,7 @@ static int apple_h9p_pcie_get_gpios(struct apple_h9p_pcie *pcie)
 		struct fwnode_handle *fwnode;
 		struct gpio_desc *gpio;
 
-		if (!(pcie->enabled_ports & BIT(i)))
+		if (!((pcie->enabled_ports | pcie->late_ports) & BIT(i)))
 			continue;
 
 		fwnode = of_fwnode_handle(pcie->port_nodes[i]);
@@ -1787,6 +1915,16 @@ static int apple_h9p_pcie_get_gpios(struct apple_h9p_pcie *pcie)
 		if (IS_ERR(pcie->clkreq[i]))
 			return dev_err_probe(dev, PTR_ERR(pcie->clkreq[i]),
 					     "failed to get CLKREQ#%u\n", i);
+
+		/* Host-to-endpoint wake (SoC GPIO); left deasserted */
+		gpio = devm_fwnode_gpiod_get(dev, fwnode, "device-wake",
+					     GPIOD_OUT_LOW, "DEVICE_WAKE");
+		if (PTR_ERR(gpio) == -ENOENT)
+			gpio = NULL;
+		pcie->devwake[i] = gpio;
+		if (IS_ERR(pcie->devwake[i]))
+			return dev_err_probe(dev, PTR_ERR(pcie->devwake[i]),
+					     "failed to get DEVICE_WAKE%u\n", i);
 	}
 
 	pcie->devpwr = devm_gpiod_get_array_optional(dev, "devpwr", GPIOD_ASIS);
@@ -1882,7 +2020,21 @@ static int apple_h9p_pcie_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	return pci_host_common_init(pdev, bridge, &apple_h9p_pcie_ecam_ops);
+	INIT_DELAYED_WORK(&pcie->late_work, apple_h9p_late_ports_work);
+	ret = devm_add_action_or_reset(dev, apple_h9p_late_ports_cancel, pcie);
+	if (ret)
+		return ret;
+
+	ret = pci_host_common_init(pdev, bridge, &apple_h9p_pcie_ecam_ops);
+	if (ret)
+		return ret;
+
+	if (pcie->late_ports) {
+		dev_info(dev, "ports %#x: bringing up after their endpoint power\n",
+			 pcie->late_ports);
+		schedule_delayed_work(&pcie->late_work, 0);
+	}
+	return 0;
 }
 
 static const struct apple_h9p_hw apple_h9p_hw_t8010 = {

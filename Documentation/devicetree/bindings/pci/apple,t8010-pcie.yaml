@@ -172,6 +172,20 @@ patternProperties:
       clkreq-gpios:
         maxItems: 1
 
+      pwren-gpios:
+        maxItems: 1
+        description:
+          Power enable of the endpoint (e.g. the Wi-Fi chip's REG_ON). A
+          port with this is brought up after probe, once the GPIO exists:
+          endpoint powered with PERST# asserted, then the link is trained
+          and the bus rescanned.
+
+      device-wake-gpios:
+        maxItems: 1
+        description:
+          Host-to-endpoint wake (ADT "function-device_wake"), kept
+          deasserted.
+
       max-link-speed:
         description:
           Target link speed of the root port. Defaults to 3 (8 GT/s) for
