@@ -591,10 +591,97 @@ static inline void nvme_write_sq_db(struct nvme_queue *nvmeq, bool write_sq)
 	nvmeq->last_sq_tail = nvmeq->sq_tail;
 }
 
+/*
+ * CONFIG_NVME_PCI_READ_ONLY: allowlist of the commands this kernel may send.
+ *
+ * I/O queues may only read and flush. The admin queue may only identify,
+ * read logs and features, manage its own queues, and set the few volatile
+ * features nvme-core configures at init. Everything else (write, write
+ * zeroes, DSM/trim, format, sanitize, firmware download/commit, namespace
+ * management, security send, directives, vendor-specific opcodes, saved
+ * features) is refused before it reaches the submission queue.
+ */
+static bool nvme_pci_cmd_allowed(const struct nvme_queue *nvmeq,
+				 const struct nvme_command *cmd)
+{
+	u32 cdw10;
+
+	if (!IS_ENABLED(CONFIG_NVME_PCI_READ_ONLY))
+		return true;
+
+	if (nvmeq->qid) {
+		switch (cmd->common.opcode) {
+		case nvme_cmd_flush:
+		case nvme_cmd_read:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	switch (cmd->common.opcode) {
+	case nvme_admin_delete_sq:
+	case nvme_admin_create_sq:
+	case nvme_admin_get_log_page:
+	case nvme_admin_delete_cq:
+	case nvme_admin_create_cq:
+	case nvme_admin_identify:
+	case nvme_admin_abort_cmd:
+	case nvme_admin_get_features:
+	case nvme_admin_async_event:
+	case nvme_admin_keep_alive:
+		return true;
+	case nvme_admin_set_features:
+		cdw10 = le32_to_cpu(cmd->features.fid);
+		/* SV: the feature would persist across power cycles */
+		if (cdw10 & BIT(31))
+			return false;
+		switch (cdw10 & 0xff) {
+		case NVME_FEAT_POWER_MGMT:
+		case NVME_FEAT_TEMP_THRESH:
+		case NVME_FEAT_NUM_QUEUES:
+		case NVME_FEAT_IRQ_COALESCE:
+		case NVME_FEAT_ASYNC_EVENT:
+		case NVME_FEAT_AUTO_PST:
+		case NVME_FEAT_TIMESTAMP:
+		case NVME_FEAT_KATO:
+		case NVME_FEAT_HOST_BEHAVIOR:
+			return true;
+		default:
+			return false;
+		}
+	default:
+		return false;
+	}
+}
+
 static inline void nvme_sq_copy_cmd(struct nvme_queue *nvmeq,
 				    struct nvme_command *cmd)
 	__must_hold(&nvmeq->sq_lock)
 {
+	struct nvme_command safe;
+
+	/*
+	 * Backstop for CONFIG_NVME_PCI_READ_ONLY: nvme_prep_rq() already
+	 * failed disallowed requests, so getting here is a bug. Never let the
+	 * command reach the device; queue a harmless one in its slot so the
+	 * SQ tail stays consistent.
+	 */
+	if (unlikely(!nvme_pci_cmd_allowed(nvmeq, cmd))) {
+		WARN_ONCE(1, "nvme: read-only: neutralized opcode %#x on qid %u\n",
+			  cmd->common.opcode, nvmeq->qid);
+		memset(&safe, 0, sizeof(safe));
+		safe.common.command_id = cmd->common.command_id;
+		if (nvmeq->qid) {
+			safe.common.opcode = nvme_cmd_flush;
+			safe.common.nsid = cmd->common.nsid;
+		} else {
+			safe.features.opcode = nvme_admin_get_features;
+			safe.features.fid = cpu_to_le32(NVME_FEAT_NUM_QUEUES);
+		}
+		cmd = &safe;
+	}
+
 	memcpy(nvmeq->sq_cmds + (nvmeq->sq_tail << nvmeq->sqes),
 		absolute_pointer(cmd), sizeof(*cmd));
 	if (++nvmeq->sq_tail == nvmeq->q_depth)
@@ -1282,6 +1369,17 @@ static blk_status_t nvme_prep_rq(struct request *req)
 	ret = nvme_setup_cmd(req->q->queuedata, req);
 	if (ret)
 		return ret;
+
+	if (unlikely(!nvme_pci_cmd_allowed(req->mq_hctx->driver_data,
+					   &iod->cmd))) {
+		dev_err_ratelimited(nvme_req(req)->ctrl->device,
+				    "read-only: refused opcode %#x on %s queue\n",
+				    iod->cmd.common.opcode,
+				    nvme_req(req)->ctrl->admin_q == req->q ?
+				    "admin" : "I/O");
+		ret = BLK_STS_IOERR;
+		goto out_free_cmd;
+	}
 
 	if (blk_rq_nr_phys_segments(req)) {
 		ret = nvme_map_data(req);
@@ -3624,6 +3722,12 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 			     quirks);
 	if (ret)
 		goto out_put_device;
+
+	if (IS_ENABLED(CONFIG_NVME_PCI_READ_ONLY)) {
+		set_bit(NVME_CTRL_FORCE_RO, &dev->ctrl.flags);
+		dev_info(&pdev->dev,
+			 "read-only: media writes and destructive admin commands are refused (CONFIG_NVME_PCI_READ_ONLY)\n");
+	}
 
 	if (dev->ctrl.quirks & NVME_QUIRK_DMA_ADDRESS_BITS_48)
 		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(48));
