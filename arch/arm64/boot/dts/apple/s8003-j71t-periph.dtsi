@@ -76,10 +76,11 @@
 	};
 
 	charger@180 {
-		/* Status only: J172 input-current policy must never run on J71t. */
+		/* Current policy is explicitly armed for the verified Mac source. */
 		compatible = "apple,j71t-d2365-charger";
 		reg = <0x180 0x1e>, <0xa00 0x0d>;
 		reg-names = "status", "control";
+		power-supplies = <&periph_tristar>;
 	};
 };
 
@@ -91,5 +92,12 @@
 		reg = <0x39>;
 		interrupts-extended = <&pinctrl_ap 71 IRQ_TYPE_LEVEL_LOW>;
 		firmware-name = "apple/j71t-LSCI.bin";
+	};
+};
+
+&i2c0 {
+	periph_tristar: power-controller@1a {
+		compatible = "apple,j71t-cbtl1610-power";
+		reg = <0x1a>;
 	};
 };
