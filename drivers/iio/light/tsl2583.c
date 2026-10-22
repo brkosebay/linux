@@ -9,6 +9,8 @@
 
 #include <linux/kernel.h>
 #include <linux/i2c.h>
+#include <linux/firmware.h>
+#include <linux/property.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
 #include <linux/string.h>
@@ -282,6 +284,8 @@ static int apple_als_load_calibration(struct tsl2583_chip *chip)
 	struct device *dev = &chip->client->dev;
 	struct apple_als_calibration *cal = &chip->cal;
 	struct nvmem_cell *cell;
+	const struct firmware *fw;
+	const char *fw_name;
 	const u8 *record;
 	size_t len;
 	u32 checksum = 0;
@@ -290,15 +294,26 @@ static int apple_als_load_calibration(struct tsl2583_chip *chip)
 	int ret;
 	int i;
 
-	cell = devm_nvmem_cell_get(dev, "calibration");
-	if (IS_ERR(cell))
-		return dev_err_probe(dev, PTR_ERR(cell),
-				     "failed to get LSCI calibration\n");
-
-	data = nvmem_cell_read(cell, &len);
-	if (IS_ERR(data))
-		return dev_err_probe(dev, PTR_ERR(data),
-				     "failed to read LSCI calibration\n");
+	if (!device_property_present(dev, "nvmem-cells") &&
+	    !device_property_read_string(dev, "firmware-name", &fw_name)) {
+		ret = request_firmware(&fw, fw_name, dev);
+		if (ret)
+			return dev_err_probe(dev, ret, "failed to load LSCI file\n");
+		len = fw->size;
+		data = kmemdup(fw->data, len, GFP_KERNEL);
+		release_firmware(fw);
+		if (!data)
+			return -ENOMEM;
+	} else {
+		cell = devm_nvmem_cell_get(dev, "calibration");
+		if (IS_ERR(cell))
+			return dev_err_probe(dev, PTR_ERR(cell),
+					     "failed to get LSCI calibration\n");
+		data = nvmem_cell_read(cell, &len);
+		if (IS_ERR(data))
+			return dev_err_probe(dev, PTR_ERR(data),
+					     "failed to read LSCI calibration\n");
+	}
 
 	if (len < APPLE_ALS_CAL_HEADER_SIZE + info->cal_record_size ||
 	    len & 1 || data[1] != info->cal_version || data[2] != 1 ||

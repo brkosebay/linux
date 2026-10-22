@@ -37,6 +37,10 @@ properties:
   vcc-supply:
     description: Regulator that provides power to the sensor
 
+  firmware-name:
+    description: Private LSCI record from this device, when NVMEM is unavailable.
+    maxItems: 1
+
   nvmem-cells:
     description:
       Apple factory LSCI ambient-light calibration data. Boot firmware must
@@ -68,6 +72,7 @@ allOf:
           - nvmem-cells
     else:
       properties:
+        firmware-name: false
         nvmem-cells: false
         nvmem-cell-names: false
 
