@@ -184,7 +184,7 @@ static inline void g5p_make_init(const struct g5p_boot_layout *p, u8 *root,
 		g5p_put32(channel + 12, ptr + 8);
 	}
 	g5p_put32(g5p_object(p, root, shared, 0x48) + 0x778, 0xffffffff);
-	g5p_put32(init + 0x480, (u32)(G5P_IMAGE_VA + 0x24000) + 0x40000000);
+	g5p_put32(init + 0x480, ((u32)(G5P_IMAGE_VA + 0x24000) + 0x40000000) | 0x40000000);
 	g5p_put64(init + 0x484, G5P_IMAGE_VA + 0x24000);
 	g5p_put32(init + 0x48c, 0x55dc);
 	g5p_put64(meta, 0x600000000ULL);
