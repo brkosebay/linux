@@ -126,6 +126,19 @@
 #define H9P_LATE_PORT_LINK_TRIES	2
 
 /*
+ * The DT keeps ASPM L1 off on every port (aspm-no-l1): iOS pairs L1 with
+ * L1SS/LTR/CLKREQ# and refclk gating, and a link that can't leave L1 takes
+ * the CPU with it. This lets a boot opt in per port for power testing
+ * (e.g. 0x2 = Wi-Fi). L1 then follows the PCI ASPM policy:
+ * /sys/module/pcie_aspm/parameters/policy = default (L1),
+ * powersupersave (+ L1 substates) or performance (off again).
+ */
+static unsigned int aspm_l1_ports;
+module_param(aspm_l1_ports, uint, 0444);
+MODULE_PARM_DESC(aspm_l1_ports,
+	"Bitmask of root ports that may use ASPM L1 despite the DT's aspm-no-l1 (default 0; 0x2 = Wi-Fi)");
+
+/*
  * S8003 (A9, TSMC). From the iOS 16 AppleS800xPCIe/AppleS8003PCIe kexts; the
  * T8010 sequence above does not match it (status register, port registers,
  * link status, phy-ip lane mapping). See docs/pcie/kernelcache-notes.md.
@@ -1857,6 +1870,14 @@ static int apple_h9p_pcie_parse_ports(struct apple_h9p_pcie *pcie)
 		}
 
 		pcie->port_nodes[port] = of_node_get(np);
+		if (aspm_l1_ports & BIT(port)) {
+			struct property *prop = of_find_property(np, "aspm-no-l1",
+								 NULL);
+
+			if (prop && !of_remove_property(np, prop))
+				dev_warn(dev, "port %u: ASPM L1 allowed (aspm_l1_ports)\n",
+					 port);
+		}
 		if (of_property_present(np, "pwren-gpios"))
 			pcie->late_ports |= BIT(port);
 		else
