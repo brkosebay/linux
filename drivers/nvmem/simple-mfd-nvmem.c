@@ -37,7 +37,8 @@ static int simple_mfd_nvmem_probe(struct platform_device *pdev)
 {
 	struct simple_mfd_nvmem *nvmem;
 	const __be32 *addr;
-	int len;
+	int len, ret;
+	u32 size;
 	struct nvmem_config nvmem_cfg = {
 		.dev = &pdev->dev,
 		.name = "simple_mfd_nvmem",
@@ -66,13 +67,23 @@ static int simple_mfd_nvmem_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "No reg property\n");
 		return -EINVAL;
 	}
-	if (len != 2 * sizeof(u32)) {
-		dev_err(&pdev->dev, "Invalid reg property\n");
-		return -EINVAL;
+	/* Address-only PMIC buses describe register count separately. */
+	if (of_n_size_cells(pdev->dev.of_node) == 0 && len == sizeof(u32)) {
+		ret = of_property_read_u32(pdev->dev.of_node, "size", &size);
+		if (ret)
+			return dev_err_probe(&pdev->dev, ret, "Missing NVMEM size\n");
+	} else if (of_n_size_cells(pdev->dev.of_node) == 1 &&
+		   len == 2 * sizeof(u32)) {
+		/* Preserve the original <base size> binding for other boards. */
+		size = be32_to_cpup(&addr[1]);
+	} else {
+		return dev_err_probe(&pdev->dev, -EINVAL, "Invalid reg property\n");
 	}
+	if (!size)
+		return dev_err_probe(&pdev->dev, -EINVAL, "Empty NVMEM range\n");
 
 	nvmem->base = be32_to_cpup(&addr[0]);
-	nvmem_cfg.size = be32_to_cpup(&addr[1]);
+	nvmem_cfg.size = size;
 
 	return PTR_ERR_OR_ZERO(devm_nvmem_register(&pdev->dev, &nvmem_cfg));
 }
