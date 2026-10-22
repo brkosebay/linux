@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* J71t N1 touch wiring. Controller/input protocol are first-test candidates. */
+/ {
+	/* Live iOS arm-io clock-frequencies[0x130 - 0x100]. */
+	spi3_nclk: clock-spi3 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <61538461>;
+	};
+};
+
+&pmgr {
+	touch_clk: clock-controller@78000 {
+		compatible = "apple,s8000-touch-clock";
+		reg = <0x78000 4>;
+		#clock-cells = <0>;
+		clocks = <&clkref>;
+	};
+};
+
+&i2c0 {
+	pmic@3c {
+		touch_analog: regulator@31c {
+			compatible = "apple,d2365-touch-analog";
+			reg = <0x31c 1>;
+			regulator-name = "touch-analog";
+		};
+	};
+};
+
+&pinctrl_ap {
+	compatible = "apple,s8000-pinctrl", "apple,pinctrl";
+
+	touch_sync_on: touch-sync-on-pins {
+		pinmux = <APPLE_PINMUX(74, 2)>;
+	};
+
+	touch_sync_off: touch-sync-off-pins {
+		pinmux = <APPLE_PINMUX(74, 0)>;
+	};
+};
+
+/* Isolated board hunk: does not enable this N1 personality on J71s/J72t. */
+&{/soc} {
+	spi3: spi@20a08c000 {
+		compatible = "apple,s8000-spi";
+		reg = <0x2 0x0a08c000 0 0x4000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		interrupts = <AIC_IRQ 191 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&spi3_nclk>;
+		power-domains = <&ps_spi3>;
+		cs-gpios = <&pinctrl_ap 102 GPIO_ACTIVE_LOW>;
+		status = "okay";
+
+		touchscreen@0 {
+			compatible = "apple,j71t-n1";
+			reg = <0>;
+			/* N1 selects 83 ns; controller rounds up to divider 6. */
+			spi-max-frequency = <12048192>;
+			/* This pinned SPI core applies GPIO CS setup twice. */
+			spi-cs-setup-delay-ns = <5000>;
+			spi-cs-hold-delay-ns = <10000>;
+			interrupt-parent = <&pinctrl_ap>;
+			interrupts = <65 IRQ_TYPE_EDGE_FALLING>;
+			attn-gpios = <&pinctrl_ap 65 GPIO_ACTIVE_LOW>;
+			reset-gpios = <&pinctrl_ap 75 GPIO_ACTIVE_LOW>;
+			ldo-gpios = <&pinctrl_ap 73 GPIO_ACTIVE_HIGH>;
+			vdd-supply = <&touch_analog>;
+			clocks = <&touch_clk>;
+			pinctrl-names = "sync-on", "sync-off";
+			pinctrl-0 = <&touch_sync_on>;
+			pinctrl-1 = <&touch_sync_off>;
+			firmware-name = "apple/j71t-n1.bin";
+			apple,calibration-firmware = "apple/j71t-n1-calibration.bin";
+		};
+	};
+};

@@ -46,3 +46,5 @@
 &pcie0_port1 {
 	status = "disabled";
 };
+
+#include "s8003-j71t-touch.dtsi"

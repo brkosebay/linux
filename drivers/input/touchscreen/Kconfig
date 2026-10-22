@@ -103,6 +103,15 @@ config TOUCHSCREEN_ADC
 	  To compile this driver as a module, choose M here: the
 	  module will be called resistive-adc-touch.ko.
 
+config TOUCHSCREEN_APPLE_N1
+	tristate "Apple J71t N1 SPI touchscreen"
+	depends on SPI && OF && GPIOLIB && COMMON_CLK
+	depends on REGULATOR
+	select INPUT_MT
+	help
+	  N1 (multi-touch,j72/C1F15,1) touchscreen on Apple J71t.
+	  Requires this unit's firmware and calibration, and legacy A9 SPI.
+
 config TOUCHSCREEN_APPLE_Z2
 	tristate "Apple Z2 touchscreens"
 	depends on SPI && (ARCH_APPLE || COMPILE_TEST)
