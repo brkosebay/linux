@@ -13,3 +13,5 @@
 	compatible = "apple,j71t", "apple,s8003", "apple,arm-platform";
 	model = "Apple iPad 5 (Wi-Fi) (TSMC)";
 };
+
+#include "s8003-j71t-touch.dtsi"
