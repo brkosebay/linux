@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0+ OR MIT
-/* J71t N1 touch wiring. Controller/input protocol are first-test candidates. */
+/* J71t N1 touch wiring; portrait framebuffer, home button at the bottom. */
 / {
 	/* Live iOS arm-io clock-frequencies[0x130 - 0x100]. */
 	spi3_nclk: clock-spi3 {
@@ -56,6 +56,8 @@
 		touchscreen@0 {
 			compatible = "apple,j71t-n1";
 			reg = <0>;
+			/* Owner-confirmed corner taps: X agrees, raw Y grows upward. */
+			touchscreen-inverted-y;
 			/* N1 selects 83 ns; controller rounds up to divider 6. */
 			spi-max-frequency = <12048192>;
 			/* This pinned SPI core applies GPIO CS setup twice. */
