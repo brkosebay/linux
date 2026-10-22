@@ -157,7 +157,7 @@ static int g5p_firmware(struct g5p_diag *g, bool prepare)
 	dev_info(g->dev, "firmware SHA256 and all 94 LDR records validated\n");
 	if (prepare && !g->loaded) {
 		g->image.data = dmam_alloc_coherent(g->dev, G5P_IMAGE_SIZE,
-						  &g->image_dma, GFP_KERNEL);
+						    &g->image_dma, GFP_KERNEL);
 		if (!g->image.data) {
 			ret = -ENOMEM;
 			goto out;
