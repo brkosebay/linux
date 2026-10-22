@@ -750,7 +750,7 @@ static const struct of_device_id apple_d2365_charger_of_match[] = {
 		.compatible = "apple,j172-d2365-charger",
 		.data = &apple_d2365_j172_config,
 	},
-	{ .compatible = "apple,j71t-d2365-charger" },
+	/* J71t has a separate, explicitly armed charging driver. */
 	{ .compatible = "apple,d2365-charger" },
 	{ }
 };
