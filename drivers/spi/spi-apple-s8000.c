@@ -72,8 +72,9 @@ static int s8000_spi_transfer_one(struct spi_controller *ctlr,
 	unsigned int sent = 0, received = 0, iterations = 0;
 	u32 speed = transfer->speed_hz ?: device->max_speed_hz;
 	u32 divisor, cfg, status, tx_level, rx_level;
+	u64 word_delay_cycles;
 	ktime_t deadline;
-	int ret = 0;
+	int word_delay_ns, ret = 0;
 
 	if (!transfer->len)
 		return 0;
@@ -84,6 +85,15 @@ static int s8000_spi_transfer_one(struct spi_controller *ctlr,
 	if (!divisor || divisor > S8000_DIV_MAX)
 		return -EINVAL;
 	transfer->effective_speed_hz = rate / divisor;
+	/* The SPI core merges the device minimum into transfer->word_delay. */
+	word_delay_ns = spi_delay_to_ns(&transfer->word_delay, transfer);
+	if (word_delay_ns < 0)
+		return word_delay_ns;
+	/* WORD_DELAY counts input-clock cycles, not divided SCK cycles. */
+	word_delay_cycles = DIV_ROUND_UP_ULL((u64)rate * word_delay_ns,
+					    NSEC_PER_SEC);
+	if (word_delay_cycles > U32_MAX)
+		return -EINVAL;
 	cfg = S8000_CFG_BASE;
 	if (device->mode & SPI_CPHA)
 		cfg |= S8000_CFG_CPHA;
@@ -93,7 +103,7 @@ static int s8000_spi_transfer_one(struct spi_controller *ctlr,
 	/* spi-version 1 has FIFO counts in STATUS, unlike the M1 controller. */
 	writel(0, spi->base + S8000_CTRL);
 	writel(divisor, spi->base + S8000_CLKDIV);
-	writel(0, spi->base + S8000_WORD_DELAY);
+	writel(word_delay_cycles, spi->base + S8000_WORD_DELAY);
 	writel(S8000_STATUS_CLEAR, spi->base + S8000_STATUS);
 	writel(cfg, spi->base + S8000_CFG);
 	writel(S8000_CTRL_ENABLE, spi->base + S8000_CTRL);

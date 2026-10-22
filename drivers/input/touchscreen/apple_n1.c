@@ -692,6 +692,9 @@ static int n1_probe(struct spi_device *spi)
 		return -ENOMEM;
 	spi_set_drvdata(spi, n1);
 	spi->bits_per_word = 8;
+	/* Selected iOS device tuple +12: minimum 5000ns inter-word delay. */
+	spi->word_delay.value = 5;
+	spi->word_delay.unit = SPI_DELAY_UNIT_USECS;
 	ret = spi_setup(spi);
 	if (ret)
 		return ret;

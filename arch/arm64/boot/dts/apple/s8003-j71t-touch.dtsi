@@ -58,6 +58,9 @@
 			reg = <0>;
 			/* N1 selects 83 ns; controller rounds up to divider 6. */
 			spi-max-frequency = <12048192>;
+			/* This pinned SPI core applies GPIO CS setup twice. */
+			spi-cs-setup-delay-ns = <5000>;
+			spi-cs-hold-delay-ns = <10000>;
 			interrupt-parent = <&pinctrl_ap>;
 			interrupts = <65 IRQ_TYPE_EDGE_FALLING>;
 			attn-gpios = <&pinctrl_ap 65 GPIO_ACTIVE_LOW>;
