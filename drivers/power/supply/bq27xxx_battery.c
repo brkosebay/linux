@@ -785,8 +785,8 @@ static enum power_supply_property bq27545_props[] = {
 
 /*
  * Cache-only transports use this BQ27545 subset so property requests never
- * initiate bus transactions. Design charge may be supplied as static board
- * data through monitored-battery.
+ * initiate bus transactions. The power-supply core exposes design charge
+ * only when valid static monitored-battery data is available.
  */
 static const enum power_supply_property bq27545_cache_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
@@ -800,7 +800,6 @@ static const enum power_supply_property bq27545_cache_props[] = {
 	POWER_SUPPLY_PROP_TECHNOLOGY,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
-	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_POWER_AVG,
 	POWER_SUPPLY_PROP_HEALTH,
