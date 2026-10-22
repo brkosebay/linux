@@ -13,6 +13,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/gfp.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
+#include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/log2.h>
 #include <linux/mempool.h>
@@ -467,6 +468,18 @@ static void nvme_pci_apple_ans_log_msi(struct nvme_dev *dev)
 		 msi, flags, hi, lo, data, msix, xflags, pci_irq_vector(pdev, 0));
 }
 
+/* Linux's own mapping of a queue IOVA, then the DART table walk for it */
+static void nvme_pci_apple_ans_log_queue(struct nvme_dev *dev, const char *what,
+					 dma_addr_t iova)
+{
+	struct iommu_domain *dom = iommu_get_domain_for_dev(dev->dev);
+	phys_addr_t pa = dom ? iommu_iova_to_phys(dom, iova) : 0;
+
+	dev_info(dev->dev, "Apple ANS: %s IOVA %pad -> PA %pa (Linux view)\n",
+		 what, &iova, &pa);
+	apple_ans_dart_walk(dev->dev, what, iova);
+}
+
 /*
  * Stop short or wait for userspace before CC.EN. Runs in reset_work with
  * shutdown_lock held, so a reboot during the hold waits for it to end.
@@ -527,6 +540,8 @@ static int nvme_pci_apple_ans_prepare_enable(struct nvme_dev *dev)
 		 lo_hi_readq(dev->bar + NVME_REG_ACQ));
 	nvme_pci_apple_ans_log_msi(dev);
 	apple_ans_host_dump(dev->dev, "before CC.EN");
+	nvme_pci_apple_ans_log_queue(dev, "ASQ", dev->queues[0].sq_dma_addr);
+	nvme_pci_apple_ans_log_queue(dev, "ACQ", dev->queues[0].cq_dma_addr);
 	apple_ans_settle();
 
 	ret = nvme_pci_apple_ans_gate(dev);
