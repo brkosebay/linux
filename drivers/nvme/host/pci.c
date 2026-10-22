@@ -3201,6 +3201,13 @@ static int nvme_pci_enable(struct nvme_dev *dev)
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	unsigned int flags = PCI_IRQ_ALL_TYPES;
 
+	/*
+	 * A host bridge cuts off a port whose link did not come back after
+	 * system sleep; a BAR read over it could stall the CPU.
+	 */
+	if (pci_dev_is_disconnected(pdev))
+		return -ENODEV;
+
 	if (pci_enable_device_mem(pdev))
 		return result;
 
