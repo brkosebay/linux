@@ -162,6 +162,7 @@ static int g5p_firmware(struct g5p_diag *g, bool prepare)
 			ret = -ENOMEM;
 			goto out;
 		}
+		memset(g->image.data, 0, G5P_IMAGE_SIZE);
 		ret = g5p_ldr_walk(fw->data, fw->size, g5p_pack_record, &g->image);
 		if (!ret && g->image.config_count != G5P_CONFIG_WRITES)
 			ret = -EINVAL;
@@ -206,7 +207,7 @@ static int g5p_sample(struct g5p_diag *g)
 
 static int g5p_read_id(struct g5p_diag *g)
 {
-	u32 words[2];
+	u32 words[2], version;
 	static const u32 offsets[] = { 0x20, 0x18 };
 	unsigned int i;
 
@@ -218,6 +219,11 @@ static int g5p_read_id(struct g5p_diag *g)
 		dev_info(g->dev, "R0+%05x=%08x\n", offsets[i], words[i]);
 	}
 	if ((!words[0] && !words[1]) || words[0] == ~0U || words[1] == ~0U)
+		return -ENODEV;
+	/* Match Apple readChipInfo at ...6ca644c before deeper META accesses. */
+	version = (words[0] >> 8) & 0xff;
+	if ((words[0] & 0xff0000) != 0x90000 ||
+	    (version != 7 && version != 10 && version != 13 && version != 15))
 		return -ENODEV;
 	g->id_checked = true;
 	return 0;
