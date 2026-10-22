@@ -23,8 +23,6 @@ properties:
           - const: apple,d2365-charger
 
   reg:
-    minItems: 2
-    maxItems: 2
     items:
       - description: Charger status register bank.
       - description: Charger control register bank.
