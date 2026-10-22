@@ -49,7 +49,7 @@ config APPLE_PMP_T8015_V1
 	  Say 'y' here if you have an Apple A11 SoC.
 
 config APPLE_SIO
-	tristate "Apple T8010 SmartIO coprocessor"
+	tristate "Apple S8000/T8010 SmartIO coprocessor"
 	depends on ARM64
 	depends on PM
 	depends on ARCH_APPLE || COMPILE_TEST
@@ -59,7 +59,7 @@ config APPLE_SIO
 	  application processor. It provides DMA services to peripheral
 	  controllers such as SPI.
 
-	  Say Y here if you have an Apple T8010 SoC.
+	  Say Y here if you have an Apple S8000/S8003 or T8010 SoC.
 
 config APPLE_SART
 	tristate "Apple SART DMA address filter"
