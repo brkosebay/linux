@@ -63,6 +63,13 @@
 /* marks PTE as valid */
 #define APPLE_DART_PTE_VALID		BIT(0)
 
+/*
+ * S5L8960X table entries (iOS AppleS5L8960XDART::_createL3Table writes
+ * (pa & 0xffffff000) | 3). With bit 0 only, the DART reports an invalid
+ * STE, i.e. "NO PMD".
+ */
+#define APPLE_DART_S5L8960X_TABLE_VALID	GENMASK_ULL(1, 0)
+
 /* IOPTE accessors */
 #define iopte_deref(pte, d) __va(iopte_to_paddr(pte, d))
 
@@ -125,9 +132,15 @@ static int dart_init_pte(struct dart_io_pgtable *data,
 			return -EEXIST;
 		}
 
-	/* subpage protection: always allow access to the entire page */
-	pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_START, 0);
-	pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_END, 0xfff);
+	/*
+	 * subpage protection: always allow access to the entire page. S5L8960X
+	 * keeps its subpage range at bits 61:50/47:36 and ignores it with bit 1
+	 * (SP_DIS) set; iOS leaves those bits clear, so do the same.
+	 */
+	if (!(data->iop.cfg.quirks & IO_PGTABLE_QUIRK_APPLE_DART_S5L8960X)) {
+		pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_START, 0);
+		pte |= FIELD_PREP(APPLE_DART_PTE_SUBPAGE_END, 0xfff);
+	}
 
 	pte |= APPLE_DART_PTE_VALID;
 
@@ -145,6 +158,8 @@ static dart_iopte dart_install_table(dart_iopte *table,
 	dart_iopte old, new;
 
 	new = paddr_to_iopte(__pa(table), data) | APPLE_DART_PTE_VALID;
+	if (data->iop.cfg.quirks & IO_PGTABLE_QUIRK_APPLE_DART_S5L8960X)
+		new |= APPLE_DART_S5L8960X_TABLE_VALID;
 
 	/*
 	 * Ensure the table itself is visible before its PTE can be.

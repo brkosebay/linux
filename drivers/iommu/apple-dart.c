@@ -22,6 +22,7 @@
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/minmax.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -29,6 +30,7 @@
 #include <linux/of_platform.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/ratelimit.h>
 #include <linux/slab.h>
 #include <linux/swab.h>
 #include <linux/types.h>
@@ -224,6 +226,8 @@ struct apple_dart {
 	u32 num_streams;
 	u32 supports_bypass : 1;
 	u32 four_level : 1;
+
+	struct ratelimit_state fault_rs;
 
 	/* IOVA window for 1-cell masters (apple,dma-range), default: all of ias */
 	dma_addr_t dma_min;
@@ -791,6 +795,8 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 		.coherent_walk = 1,
 		.iommu_dev = dart->dev,
 	};
+	if (dart->hw->type == DART_S5L8960X)
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_APPLE_DART_S5L8960X;
 
 	dart_domain->pgtbl_ops = alloc_io_pgtable_ops(dart->hw->fmt, &pgtbl_cfg,
 						      &dart_domain->domain);
@@ -1266,6 +1272,31 @@ static const struct iommu_ops apple_dart_iommu_ops = {
 	}
 };
 
+/*
+ * Follow the tables the way the hardware does for DART-side address @addr
+ * of stream @sid: TTBR = addr[31:30], STE = addr[29:21], PTE = addr[20:12]
+ * (iOS, AppleS5L8960XDART). Read-only; for fault diagnostics.
+ */
+static void apple_dart_s5l8960x_walk(struct apple_dart *dart, u32 sid,
+				     u32 addr, const char *why)
+{
+	u32 ttbr_idx = addr >> 30, ste_idx = (addr >> 21) & 0x1ff;
+	u32 pte_idx = (addr >> 12) & 0x1ff;
+	u32 ttbr = readl(dart->regs + DART_TTBR(dart, sid, ttbr_idx));
+	phys_addr_t pa = (phys_addr_t)(ttbr & GENMASK(23, 0)) << 12;
+	u64 ste = 0, pte = 0;
+
+	if ((ttbr & DART_T8020_TTBR_VALID) && pfn_valid(PHYS_PFN(pa))) {
+		ste = READ_ONCE(((u64 *)phys_to_virt(pa))[ste_idx]);
+		pa = ste & GENMASK_ULL(35, 12);
+		if ((ste & BIT(0)) && pfn_valid(PHYS_PFN(pa)))
+			pte = READ_ONCE(((u64 *)phys_to_virt(pa))[pte_idx]);
+	}
+	dev_err(dart->dev,
+		"%s: walk %#x: TTBR%u %#x -> STE[%#x] %#llx -> PTE[%#x] %#llx\n",
+		why, addr, ttbr_idx, ttbr, ste_idx, ste, pte_idx, pte);
+}
+
 static irqreturn_t apple_dart_s5l8960x_irq(int irq, void *dev)
 {
 	struct apple_dart *dart = dev;
@@ -1304,6 +1335,8 @@ static irqreturn_t apple_dart_s5l8960x_irq(int irq, void *dev)
 		"translation fault: status:0x%x stream:%d code:0x%x (%s) at 0x%x (IOVA %#llx)\n",
 		error, stream_idx, error_code, fault_name, addr,
 		(u64)addr | dart->dma_min);
+	if (__ratelimit(&dart->fault_rs))
+		apple_dart_s5l8960x_walk(dart, stream_idx, addr, "fault");
 
 	writel(error, dart->regs + DART_S5L8960X_ERROR);
 	return IRQ_HANDLED;
@@ -1471,6 +1504,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 	dart->dev = dev;
 	dart->hw = of_device_get_match_data(dev);
 	spin_lock_init(&dart->lock);
+	ratelimit_state_init(&dart->fault_rs, 5 * HZ, 4);
 
 	dart->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(dart->regs))
