@@ -30,9 +30,14 @@
 #include "core.h"
 #include "pinmux.h"
 
+struct apple_gpio_soc_data {
+	bool s8000_mux;
+};
+
 struct apple_gpio_pinctrl {
 	struct device *dev;
 	struct pinctrl_dev *pctldev;
+	const struct apple_gpio_soc_data *soc;
 
 	void __iomem *base;
 	struct regmap *map;
@@ -182,9 +187,22 @@ static int apple_gpio_pinmux_set(struct pinctrl_dev *pctldev, unsigned int func,
 {
 	struct apple_gpio_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
 
-	apple_gpio_set_reg(
-		pctl, group, REG_GPIOx_PERIPH | REG_GPIOx_INPUT_ENABLE,
-		FIELD_PREP(REG_GPIOx_PERIPH, func) | REG_GPIOx_INPUT_ENABLE);
+	u32 mask = REG_GPIOx_PERIPH | REG_GPIOx_INPUT_ENABLE;
+	u32 value = FIELD_PREP(REG_GPIOx_PERIPH, func) | REG_GPIOx_INPUT_ENABLE;
+
+	/* S8000 GPIO platform-function modes, verified in its iOS driver:
+	 * peripheral routing clears bit 4; GPIO mux selects output mode.
+	 * This reproduces the N1 display-sync on/off states without changing
+	 * the generic/M1 register semantics or the pin data/pull fields.
+	 */
+	if (pctl->soc && pctl->soc->s8000_mux) {
+		mask |= BIT(4);
+		if (!func) {
+			mask |= REG_GPIOx_MODE;
+			value |= FIELD_PREP(REG_GPIOx_MODE, REG_GPIOx_OUT);
+		}
+	}
+	apple_gpio_set_reg(pctl, group, mask, value);
 
 	return 0;
 }
@@ -455,6 +473,7 @@ static int apple_gpio_pinctrl_probe(struct platform_device *pdev)
 	if (!pctl)
 		return -ENOMEM;
 	pctl->dev = &pdev->dev;
+	pctl->soc = of_device_get_match_data(&pdev->dev);
 	pctl->gpio_chip.irq.num_parents = nirqs;
 	dev_set_drvdata(&pdev->dev, pctl);
 
@@ -521,7 +540,12 @@ static int apple_gpio_pinctrl_probe(struct platform_device *pdev)
 	return apple_gpio_register(pctl);
 }
 
+static const struct apple_gpio_soc_data s8000_gpio_data = {
+	.s8000_mux = true,
+};
+
 static const struct of_device_id apple_gpio_pinctrl_of_match[] = {
+	{ .compatible = "apple,s8000-pinctrl", .data = &s8000_gpio_data },
 	{ .compatible = "apple,t8103-pinctrl", },
 	{ .compatible = "apple,pinctrl", },
 	{ }
