@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * J71t built-in speakers: CS42L81 on SPI1 (control) + MCA0 (data).
+ * Values: Apple's J71t ADT and iOS 16.7.10's AppleCS42L81Audio/AppleAE2MCA
+ * (linux-a9 docs/audio/playback-path.md). Items marked "inferred" are
+ * unverified on hardware.
+ */
+
+/ {
+	/* Live iOS arm-io clock-frequencies[0x12e - 0x100] (spi1 clock-ids) */
+	spi1_nclk: clock-spi1 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <61538461>;
+	};
+
+	sound: sound {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "iPad5 Speakers";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&j71t_codec_dai>;
+		simple-audio-card,frame-master = <&j71t_codec_dai>;
+		simple-audio-card,widgets = "Speaker", "Speakers";
+		simple-audio-card,routing = "Speakers", "SPKOUT";
+
+		simple-audio-card,cpu {
+			sound-dai = <&mca0>;
+		};
+
+		j71t_codec_dai: simple-audio-card,codec {
+			sound-dai = <&cs42l81>;
+		};
+	};
+};
+
+&{/soc} {
+	i2s_switch: syscon@20a003000 {
+		compatible = "apple,s8000-i2s-switch", "syscon";
+		reg = <0x2 0x0a003000 0x0 0x1000>;
+	};
+
+	mca0: mca@20a0a0000 {
+		compatible = "apple,s8000-mca";
+		reg = <0x2 0x0a0a0000 0x0 0x4000>,
+		      <0x2 0x0a002000 0x0 0x4>;
+		reg-names = "mca", "mclk";
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 201 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_mca0>;
+		#sound-dai-cells = <0>;
+		#clock-cells = <0>;
+		clock-output-names = "mca0-mclk";
+		/* nclk (24 MHz fixed, inferred) / 2 = 12 MHz, output enabled */
+		apple,mclk-control = <0x58>;
+		apple,mclk-frequency = <12000000>;
+		apple,i2s-switch = <&i2s_switch>;
+		/*
+		 * Byte offset, value. Codec is clock master on pin0 (inferred):
+		 * pin0 data from aud0, aud0 clocks+data from pin0, pin0 drives
+		 * data only.
+		 */
+		apple,i2s-switch-route = <0x00 0x00000018>,
+					 <0x14 0x00080808>,
+					 <0x3c 0x00000010>;
+		/* SIO DMA endpoint 0x28 (TX, ADT dma-channels[0]) once SIO lands:
+		 * dmas = <&sio 0x28>;
+		 * dma-names = "tx";
+		 */
+	};
+
+	j71t_spi1: spi@20a084000 {
+		/* driver: spi-apple-s8000 (touch workstream) */
+		compatible = "apple,s8000-spi";
+		reg = <0x2 0x0a084000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 189 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&spi1_nclk>;
+		power-domains = <&ps_spi1>;
+		/* ADT function-spi_cs0 = GPIO(0x10, 0x10001) */
+		cs-gpios = <&pinctrl_ap 16 GPIO_ACTIVE_LOW>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cs42l81: audio-codec@0 {
+			compatible = "cirrus,cs42l81";
+			reg = <0>;
+			/* ADT gives no speed; iOS framing is mode 0 (inferred) */
+			spi-max-frequency = <1000000>;
+			clocks = <&mca0>;
+			clock-names = "mclk";
+			/* function-spkr_mute = GPIO(0x40, 0x10001): active low (inferred) */
+			mute-gpios = <&pinctrl_ap 64 GPIO_ACTIVE_LOW>;
+			/* spkr-gain-db = -3.0 dB */
+			apple,max-speaker-gain-db-q8 = <(-768)>;
+			apple,speaker-mode = <2>;
+			#sound-dai-cells = <0>;
+		};
+	};
+};
