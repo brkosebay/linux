@@ -12,6 +12,8 @@ maintainers:
 description: |
   The Apple D2365 PMIC contains power-source status and charger-control banks.
   The J172 variant uses a platform-calibrated, guarded input-current policy.
+  J71t has an explicitly armed policy for a verified USB source, requiring
+  private input-current calibration and live Tristar source presence.
 
 properties:
   compatible:
@@ -42,16 +44,8 @@ required:
 
 allOf:
   - $ref: power-supply.yaml#
-  - if:
-      properties:
-        compatible:
-          const: apple,j71t-d2365-charger
-    then:
-      properties:
-        power-supplies: false
-    else:
-      required:
-        - power-supplies
+  - required:
+      - power-supplies
 
 additionalProperties: false
 
