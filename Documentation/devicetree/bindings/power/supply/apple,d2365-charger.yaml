@@ -13,13 +13,11 @@ description: |
   The Apple D2365 PMIC contains power-source status and charger-control banks.
   The J172 variant uses a platform-calibrated, guarded input-current policy.
 
-allOf:
-  - $ref: power-supply.yaml#
-
 properties:
   compatible:
     oneOf:
       - const: apple,d2365-charger
+      - const: apple,j71t-d2365-charger
       - items:
           - const: apple,j172-d2365-charger
           - const: apple,d2365-charger
@@ -43,7 +41,19 @@ required:
   - compatible
   - reg
   - reg-names
-  - power-supplies
+
+allOf:
+  - $ref: power-supply.yaml#
+  - if:
+      properties:
+        compatible:
+          const: apple,j71t-d2365-charger
+    then:
+      properties:
+        power-supplies: false
+    else:
+      required:
+        - power-supplies
 
 additionalProperties: false
 

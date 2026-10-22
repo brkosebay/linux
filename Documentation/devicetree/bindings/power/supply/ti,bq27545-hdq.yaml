@@ -19,7 +19,9 @@ allOf:
 
 properties:
   compatible:
-    const: ti,bq27545-hdq
+    enum:
+      - ti,bq27545-hdq
+      - apple,j71t-bq27540
 
   power-supplies:
     maxItems: 1

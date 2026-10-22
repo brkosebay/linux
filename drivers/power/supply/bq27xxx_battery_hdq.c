@@ -145,6 +145,8 @@ static const struct w1_family_ops bq27xxx_battery_hdq_fops = {
 
 static const struct of_device_id bq27xxx_battery_hdq_of_match[] = {
 	{ .compatible = "apple,d111-bq27545", .data = (void *)BQ27545 },
+	/* J71t ADT says bq27540; validate this J172 register-map profile. */
+	{ .compatible = "apple,j71t-bq27540", .data = (void *)BQ27545 },
 	{ .compatible = "ti,bq27545-hdq", .data = (void *)BQ27545 },
 	{ }
 };

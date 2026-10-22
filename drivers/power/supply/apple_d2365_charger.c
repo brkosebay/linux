@@ -323,6 +323,18 @@ static void apple_d2365_charge_policy_work(struct work_struct *work)
 		goto out_reschedule;
 	}
 
+	if (!charger->config) {
+		ret = regmap_read(charger->regmap,
+				  charger->status_base + D2365_STATUS_CHARGE,
+				  &status);
+		apple_d2365_cache_status(charger, ret, ret ? 0 : status);
+		ret = regmap_read(charger->regmap,
+				  charger->control_base + D2365_CONTROL_INPUT_LIMIT,
+				  &input_limit);
+		apple_d2365_cache_input_limit(charger, ret, ret ? 0 : input_limit);
+		goto out_reschedule;
+	}
+
 	ret = apple_d2365_charger_online(charger->psy, &online);
 	if (ret || online.intval != 1) {
 		reject_reason = "supplier offline";
@@ -466,6 +478,17 @@ static int apple_d2365_charger_status(struct power_supply *psy,
 		return 0;
 	}
 
+	/* No Tristar supplier yet: require the HDQ gauge to corroborate. */
+	if (ret && !charger->config && !battery_ret) {
+		if (battery_status.intval == POWER_SUPPLY_STATUS_FULL ||
+		    battery_status.intval == POWER_SUPPLY_STATUS_DISCHARGING ||
+		    (charge_state &&
+		     battery_status.intval == POWER_SUPPLY_STATUS_CHARGING)) {
+			val->intval = battery_status.intval;
+			return 0;
+		}
+	}
+
 	/*
 	 * Apple uses the non-zero D2365 field as IsCharging, but live data shows
 	 * it can remain set while Bellatrix reports USB offline. Require both
@@ -551,7 +574,7 @@ apple_d2365_charger_external_power_changed(struct power_supply *psy)
 {
 	struct apple_d2365_charger *charger = power_supply_get_drvdata(psy);
 
-	if (charger->config && !READ_ONCE(charger->shutting_down))
+	if (!READ_ONCE(charger->shutting_down))
 		mod_delayed_work(system_power_efficient_wq,
 				 &charger->charge_policy_work, 0);
 
@@ -572,6 +595,20 @@ static const struct power_supply_desc apple_d2365_charger_desc = {
 	.num_properties = ARRAY_SIZE(apple_d2365_charger_properties),
 	.get_property = apple_d2365_charger_get_property,
 	.external_power_changed = apple_d2365_charger_external_power_changed,
+};
+
+static const enum power_supply_property apple_d2365_readonly_properties[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_CHARGE_TYPE,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+};
+
+static const struct power_supply_desc apple_d2365_readonly_desc = {
+	.name = "charger",
+	.type = POWER_SUPPLY_TYPE_UNKNOWN,
+	.properties = apple_d2365_readonly_properties,
+	.num_properties = ARRAY_SIZE(apple_d2365_readonly_properties),
+	.get_property = apple_d2365_charger_get_property,
 };
 
 static int apple_d2365_charger_probe(struct platform_device *pdev)
@@ -628,7 +665,9 @@ static int apple_d2365_charger_probe(struct platform_device *pdev)
 	config.fwnode = dev_fwnode(dev);
 	config.no_wakeup_source = true;
 
-	psy = devm_power_supply_register(dev, &apple_d2365_charger_desc,
+	psy = devm_power_supply_register(dev,
+		charger->config ? &apple_d2365_charger_desc :
+		&apple_d2365_readonly_desc,
 					 &config);
 	if (IS_ERR(psy))
 		return dev_err_probe(dev, PTR_ERR(psy),
@@ -653,7 +692,7 @@ static int apple_d2365_charger_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, ret,
 				     "failed to read input-current limit\n");
 
-	if (charger->config) {
+	{
 		mod_delayed_work(system_power_efficient_wq,
 				 &charger->charge_policy_work, 0);
 	}
@@ -711,6 +750,7 @@ static const struct of_device_id apple_d2365_charger_of_match[] = {
 		.compatible = "apple,j172-d2365-charger",
 		.data = &apple_d2365_j172_config,
 	},
+	{ .compatible = "apple,j71t-d2365-charger" },
 	{ .compatible = "apple,d2365-charger" },
 	{ }
 };
