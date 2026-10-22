@@ -324,18 +324,18 @@ static int g5p_fifo_run(struct g5p_diag *g)
 	return ret;
 }
 
-static int g5p_boot_arm(struct g5p_diag *g)
+static int g5p_boot_program_stream(struct g5p_diag *g, bool release)
 {
 	struct g5p_boot *b = g->boot;
 	void __iomem *f = g->window[1];
 	int ret;
 
-	if (b->armed)
+	if (b->armed && !release)
 		return -EALREADY;
 	ret = g5p_boot_irq_setup(g);
 	if (ret)
 		return ret;
-	dev_info(g->dev, "G2 arm: META held, master boot selected; init FIFO reset\n");
+	dev_info(g->dev, "G2 init stream: master boot, release=%u; FIFO reset\n", release);
 	writel(0, f + 0x10);
 	readl(f + 0x10);
 	writel(0x40000000, f);
@@ -355,15 +355,24 @@ static int g5p_boot_arm(struct g5p_diag *g)
 	writel(0x233, f + 0x2014);
 	g5p_fifo64(g, 0xe160, b->zero.dma);
 	g5p_fifo64(g, 0xbb8, 0);
+	if (release)
+		g5p_fifo64(g, 0x100, 0);
 	ret = g5p_fifo_run(g);
 	if (ret)
 		return ret;
+	if (release)
+		return 0;
 	dev_info(g->dev, "G2 R R0+100/e148 (reset-held/catalogue readback)\n");
 	if (readq(g->rgx + 0x100) != 0x100000000ULL ||
 	    readq(g->rgx + 0xe148) != b->catalogue.dma >> 12)
 		return -EIO;
 	b->armed = true;
 	return 0;
+}
+
+static int g5p_boot_arm(struct g5p_diag *g)
+{
+	return g5p_boot_program_stream(g, false);
 }
 
 static int g5p_boot_load(struct g5p_diag *g)
@@ -428,10 +437,11 @@ static int g5p_boot_release(struct g5p_diag *g)
 	if (b->released)
 		return -EALREADY;
 	dev_info(g->dev, "G2 release: META master boot; no GPU job submitted\n");
-	b->fifo = 0x10000;
-	g5p_fifo64(g, 0x100, 0);
 	WRITE_ONCE(b->released, true);
-	ret = g5p_fifo_run(g);
+	/* Reproduce the complete original stream, including its final reset release.
+	 * Do not assume the experimental arm stage preserves a FIFO read cursor.
+	 */
+	ret = g5p_boot_program_stream(g, true);
 	if (ret)
 		return ret;
 	return 0;
