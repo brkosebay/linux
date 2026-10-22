@@ -11,7 +11,9 @@
 #include <linux/dma-mapping.h>
 #include <linux/gfp.h>
 #include <linux/iopoll.h>
+#include <linux/log2.h>
 #include <linux/mempool.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pci.h>
@@ -29,11 +31,16 @@
 #define APPLE_ANS_REG_HMB_SIZE		0x1818
 #define APPLE_ANS_REG_CORE_MASK		0x1824
 #define APPLE_ANS_REG_LOG_SIZE		0x1828
-#define APPLE_ANS_PCI_CFG_17C		0x17c
-#define APPLE_ANS_PCI_CFG_17C_VALUE	0x10081008
-#define APPLE_ANS_PCI_CFG_188		0x188
-#define APPLE_ANS_PCI_CFG_188_VALUE	0x40550000
-#define APPLE_ANS_PCI_CFG_18C		0x18c
+/*
+ * S3E config space: the A10 template wrote 0x17c, 0x18c and 0x188, which are
+ * the LTR max latencies and the L1 PM substates CTL2/CTL1 registers when the
+ * LTR capability sits at 0x178 and L1SS at 0x180 (inferred). Look the
+ * capabilities up instead of hardcoding the offsets. The values match the
+ * ADT "pci-max-latency" and "pci-l1pm-control" (enable bits cleared).
+ */
+#define APPLE_ANS_LTR_MAX_LATENCY	0x10081008
+#define APPLE_ANS_L1SS_CTL1_T8010	0x40550000
+#define APPLE_ANS_L1SS_CTL1_S8000	0x40440000
 #define APPLE_ANS_NVME_MAX_SECTORS \
 	(APPLE_ANS_NVMMU_MAX_PAGES * APPLE_ANS_NVMMU_PAGE_SIZE >> SECTOR_SHIFT)
 
@@ -41,9 +48,15 @@ struct apple_ans_nvme_req {
 	u64 pages[APPLE_ANS_NVMMU_MAX_PAGES];
 };
 
+static bool apple_ans_dart_hmb;
+module_param(apple_ans_dart_hmb, bool, 0444);
+MODULE_PARM_DESC(apple_ans_dart_hmb,
+	"Apple ANS: if the loader provides no HMB, use a DART-mapped host buffer (the iOS fallback)");
+
 struct apple_ans_nvme {
 	dma_addr_t hmb_dma;
 	u32 hmb_size;
+	void *hmb_buf;		/* DART-mapped HMB, NULL for the loader's */
 	struct apple_ans_nvme_req req[APPLE_ANS_NVMMU_MAX_REQS];
 	DECLARE_BITMAP(used_req, APPLE_ANS_NVMMU_MAX_REQS);
 	unsigned int last_req;
@@ -54,6 +67,42 @@ struct apple_ans_nvme {
 static struct apple_ans_nvme *nvme_pci_apple_ans(struct nvme_dev *dev)
 {
 	return dev->dma_data;
+}
+
+static struct device_node *nvme_pci_apple_ans_host_np(struct pci_dev *pdev)
+{
+	struct pci_host_bridge *bridge = pci_find_host_bridge(pdev->bus);
+
+	if (!bridge)
+		return NULL;
+	if (bridge->dev.parent && bridge->dev.parent->of_node)
+		return bridge->dev.parent->of_node;
+	return bridge->dev.of_node;
+}
+
+static const struct of_device_id nvme_pci_apple_ans_hosts[] = {
+	{ .compatible = "apple,t8010-pcie",
+	  .data = (void *)APPLE_ANS_L1SS_CTL1_T8010 },
+	{ .compatible = "apple,s8000-pcie",
+	  .data = (void *)APPLE_ANS_L1SS_CTL1_S8000 },
+	{ .compatible = "apple,s8003-pcie",
+	  .data = (void *)APPLE_ANS_L1SS_CTL1_S8000 },
+	{ }
+};
+
+/*
+ * The S3E behind an H8/H9 PCIe root complex needs the ANS glue. A10 reports
+ * 106b:2002; the A9 ID is unverified, so match on the host bridge instead.
+ */
+bool nvme_pci_apple_ans_match(struct pci_dev *pdev)
+{
+	struct device_node *np;
+
+	if (pdev->vendor != PCI_VENDOR_ID_APPLE)
+		return false;
+
+	np = nvme_pci_apple_ans_host_np(pdev);
+	return np && of_match_node(nvme_pci_apple_ans_hosts, np);
 }
 
 static int nvme_pci_apple_ans_init(struct nvme_dev *dev, int node)
@@ -71,6 +120,12 @@ static int nvme_pci_apple_ans_init(struct nvme_dev *dev, int node)
 
 static void nvme_pci_apple_ans_exit(struct nvme_dev *dev)
 {
+	struct apple_ans_nvme *ans = nvme_pci_apple_ans(dev);
+
+	/* The controller is disabled by now, so it can't touch the HMB */
+	if (ans && ans->hmb_buf)
+		dma_free_coherent(dev->dev, ans->hmb_size, ans->hmb_buf,
+				  ans->hmb_dma);
 	kfree(dev->dma_data);
 	dev->dma_data = NULL;
 }
@@ -105,6 +160,10 @@ static int nvme_pci_apple_ans_find_hmb(struct nvme_dev *dev, u32 size_req,
 	ret = of_address_to_resource(mem_np, 0, &res);
 	if (ret)
 		goto out_put_mem;
+	if (!res.start || !resource_size(&res)) {
+		ret = -ENODEV;
+		goto out_put_mem;
+	}
 
 	ret = of_property_read_u32(pcie_np, "apple,nvmmu-iova", &iova);
 	if (ret)
@@ -129,12 +188,48 @@ static int nvme_pci_apple_ans_find_hmb(struct nvme_dev *dev, u32 size_req,
 
 	ans->hmb_dma = iova;
 	ans->hmb_size = size;
-	dev_dbg(dev->dev, "Apple ANS HMB %#x@%pa as DMA %#llx\n",
+	dev_info(dev->dev, "Apple ANS: HMB %#x@%pa as DMA %#llx\n",
 		ans->hmb_size, &res.start, (u64)ans->hmb_dma);
 
 out_put_mem:
 	of_node_put(mem_np);
 	return ret;
+}
+
+/*
+ * iOS (IONVMeFamily) takes the HMB ("scratch buffer") from
+ * nvme-scratch-virt-region, else nvme-scratch-region, else allocates a
+ * buffer of the requested size and maps it through the DART. This is the
+ * last case: the buffer lives in the DART window, the NVMMU SART isn't used.
+ */
+static int nvme_pci_apple_ans_alloc_dart_hmb(struct nvme_dev *dev,
+					     u32 size_req, u32 align_req)
+{
+	struct apple_ans_nvme *ans = nvme_pci_apple_ans(dev);
+	dma_addr_t dma;
+	void *buf;
+
+	if (!size_req || size_req == U32_MAX)
+		return -EINVAL;
+	if (!align_req || align_req == U32_MAX)
+		align_req = 1;
+	if (!is_power_of_2(align_req))
+		return -EINVAL;
+
+	buf = dma_alloc_coherent(dev->dev, size_req, &dma, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	if (!IS_ALIGNED(dma, align_req)) {
+		dma_free_coherent(dev->dev, size_req, buf, dma);
+		return -EINVAL;
+	}
+
+	ans->hmb_buf = buf;
+	ans->hmb_dma = dma;
+	ans->hmb_size = size_req;
+	dev_info(dev->dev, "Apple ANS: HMB %#x at DART DMA %pad\n",
+		 ans->hmb_size, &ans->hmb_dma);
+	return 0;
 }
 
 static int nvme_pci_apple_ans_reset_dma(struct nvme_dev *dev)
@@ -157,10 +252,37 @@ static int nvme_pci_apple_ans_reset_dma(struct nvme_dev *dev)
 	return 0;
 }
 
+static void nvme_pci_apple_ans_config(struct nvme_dev *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
+	const struct of_device_id *match;
+	u16 ltr, l1ss;
+	u32 l1ss_ctl1;
+
+	match = of_match_node(nvme_pci_apple_ans_hosts,
+			      nvme_pci_apple_ans_host_np(pdev));
+	l1ss_ctl1 = match ? (u32)(uintptr_t)match->data :
+			    APPLE_ANS_L1SS_CTL1_T8010;
+
+	pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 0x40);
+
+	ltr = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_LTR);
+	l1ss = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_L1SS);
+	dev_info(dev->dev, "Apple ANS: LTR cap at %#x, L1SS cap at %#x\n",
+		 ltr, l1ss);
+
+	if (ltr)
+		pci_write_config_dword(pdev, ltr + PCI_LTR_MAX_SNOOP_LAT,
+				       APPLE_ANS_LTR_MAX_LATENCY);
+	if (l1ss) {
+		pci_write_config_dword(pdev, l1ss + PCI_L1SS_CTL2, 0);
+		pci_write_config_dword(pdev, l1ss + PCI_L1SS_CTL1, l1ss_ctl1);
+	}
+}
+
 static int nvme_pci_apple_ans_preinit(struct nvme_dev *dev)
 {
 	struct apple_ans_nvme *ans = nvme_pci_apple_ans(dev);
-	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	u32 csts, core_mask, log_size;
 	u32 hmb_size, hmb_align;
 	int ret;
@@ -168,44 +290,44 @@ static int nvme_pci_apple_ans_preinit(struct nvme_dev *dev)
 	if (!ans)
 		return 0;
 
-	if (pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 0x40) !=
-	    PCIBIOS_SUCCESSFUL ||
-	    pci_write_config_dword(pdev, APPLE_ANS_PCI_CFG_17C,
-				   APPLE_ANS_PCI_CFG_17C_VALUE) !=
-	    PCIBIOS_SUCCESSFUL ||
-	    pci_write_config_dword(pdev, APPLE_ANS_PCI_CFG_18C, 0) !=
-	    PCIBIOS_SUCCESSFUL ||
-	    pci_write_config_dword(pdev, APPLE_ANS_PCI_CFG_188,
-				   APPLE_ANS_PCI_CFG_188_VALUE) !=
-	    PCIBIOS_SUCCESSFUL)
-		return -EIO;
-
 	core_mask = readl(dev->bar + APPLE_ANS_REG_CORE_MASK);
 	log_size = readl(dev->bar + APPLE_ANS_REG_LOG_SIZE);
 	hmb_size = readl(dev->bar + APPLE_ANS_REG_HMB_SIZE_REQ);
 	hmb_align = readl(dev->bar + APPLE_ANS_REG_HMB_ALIGN_REQ);
+	dev_info(dev->dev,
+		 "Apple ANS: core_mask=%#x log_size=%#x hmb_req=%#x align=%#x\n",
+		 core_mask, log_size, hmb_size, hmb_align);
+
+	/*
+	 * Check everything this needs from the loader and the host bridge
+	 * before writing anything to the controller.
+	 */
+	if (!ans->hmb_size) {
+		ret = nvme_pci_apple_ans_find_hmb(dev, hmb_size, hmb_align);
+		if (ret && apple_ans_dart_hmb)
+			ret = nvme_pci_apple_ans_alloc_dart_hmb(dev, hmb_size,
+								hmb_align);
+		if (ret)
+			return dev_err_probe(dev->dev, ret,
+					     "Apple ANS: no usable HMB (needs a loader that fills /reserved-memory/nvme-hmb, or nvme.apple_ans_dart_hmb=1)\n");
+	}
+
+	ret = nvme_pci_apple_ans_reset_dma(dev);
+	if (ret)
+		return dev_err_probe(dev->dev, ret,
+				     "Apple ANS: failed to reset NVMMU DMA slots\n");
+
+	nvme_pci_apple_ans_config(dev);
 
 	writel(0, dev->bar + NVME_REG_CC);
 	ret = readl_poll_timeout(dev->bar + NVME_REG_CSTS, csts,
 				 !(csts & (NVME_CSTS_RDY | NVME_CSTS_CFS)),
 				 1000, 2000000);
 	if (ret)
-		return ret;
-
-	if (!ans->hmb_size) {
-		ret = nvme_pci_apple_ans_find_hmb(dev, hmb_size, hmb_align);
-		if (ret)
-			return ret;
-	}
-
-	ret = nvme_pci_apple_ans_reset_dma(dev);
-	if (ret)
 		return dev_err_probe(dev->dev, ret,
-				     "failed to reset ANS DMA slots\n");
+				     "Apple ANS: controller did not stop (CSTS=%#x)\n",
+				     csts);
 
-	dev_dbg(dev->dev,
-		"Apple ANS core_mask=%#x log_size=%#x hmb_req=%#x align=%#x\n",
-		core_mask, log_size, hmb_size, hmb_align);
 	return 0;
 }
 

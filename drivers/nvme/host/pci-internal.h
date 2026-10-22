@@ -188,5 +188,6 @@ struct nvme_iod {
 };
 
 extern const struct nvme_pci_dma_ops nvme_pci_apple_ans_ops;
+bool nvme_pci_apple_ans_match(struct pci_dev *pdev);
 
 #endif /* _NVME_PCI_INTERNAL_H */

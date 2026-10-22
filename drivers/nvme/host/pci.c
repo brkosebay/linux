@@ -3611,9 +3611,10 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 		quirks |= qentry->enabled_quirks;
 		quirks &= ~qentry->disabled_quirks;
 	}
-	if (pdev->vendor == PCI_VENDOR_ID_APPLE &&
-	    pdev->device == PCI_DEVICE_ID_APPLE_ANS_NVME)
+	if (nvme_pci_apple_ans_match(pdev)) {
 		dev->dma_ops = &nvme_pci_apple_ans_ops;
+		quirks |= NVME_QUIRK_SINGLE_VECTOR | NVME_QUIRK_SHARED_TAGS;
+	}
 	if (dev->dma_ops) {
 		ret = dev->dma_ops->init(dev, node);
 		if (ret)
