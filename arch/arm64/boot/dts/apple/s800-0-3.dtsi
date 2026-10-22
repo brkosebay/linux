@@ -291,6 +291,12 @@
 			interrupts = <AIC_IRQ 4 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
+		/*
+		 * dma-range, error-reflector, fetch-config and diag-config are
+		 * the j71t ADT dart-apcie0/1 vm-offset/vm-size, error-reflector,
+		 * fetch-config and diag-config, which iOS programs at every
+		 * DART init.
+		 */
 		pcie0_dart0: iommu@601008000 {
 			compatible = "apple,s8000-dart", "apple,s5l8960x-dart";
 			reg = <0x6 0x01008000 0x0 0x4000>;
@@ -298,6 +304,10 @@
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 245 IRQ_TYPE_LEVEL_HIGH>;
 			power-domains = <&ps_pcie_link0>;
+			apple,dma-range = <0x0 0x80000000 0x0 0x3c000000>;
+			apple,error-reflector = /bits/ 64 <0x20fffc000>;
+			apple,fetch-config = <0x000e0303>;
+			apple,diag-config = <0x00000100>;
 			status = "disabled";
 		};
 
@@ -308,6 +318,10 @@
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 248 IRQ_TYPE_LEVEL_HIGH>;
 			power-domains = <&ps_pcie_link1>;
+			apple,dma-range = <0x0 0x80000000 0x0 0x3ffff000>;
+			apple,error-reflector = /bits/ 64 <0x20fffc000>;
+			apple,fetch-config = <0x000e0303>;
+			apple,diag-config = <0x00000100>;
 			status = "disabled";
 		};
 	};

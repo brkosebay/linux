@@ -100,10 +100,10 @@
 		/*
 		 * Root-complex inbound windows: 0x40000000 NVMMU FlatDMA,
 		 * 0x80000000 DART (ADT vm-offset/vm-size), 0xbc000000 NVMMU
-		 * SART, 0xbffff000 MSI. Keep IOVAs inside the DART window.
+		 * SART, 0xbffff000 MSI. The DARTs' apple,dma-range keeps IOVAs
+		 * inside the DART window. No dma-ranges here: one that ends
+		 * below RAM empties ZONE_DMA/DMA32 (no CMA, no swiotlb).
 		 */
-		dma-ranges = <0x02000000 0x0 0x80000000 0x0 0x80000000
-			      0x0 0x3c000000>;
 		iommu-map = <0x100 &pcie0_dart0 0 1>,
 			    <0x200 &pcie0_dart1 0 1>;
 		iommu-map-mask = <0xff00>;
