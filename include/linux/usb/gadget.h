@@ -360,6 +360,27 @@ struct usb_gadget_ops {
 	int	(*check_config)(struct usb_gadget *gadget);
 };
 
+struct device_node;
+struct notifier_block;
+
+/**
+ * struct usb_gadget_current_budget - instantaneous USB power authorization
+ * @of_node: controller node, valid for the synchronous callback or caller query
+ * @current_ma: active authorization in mA, zero when disconnected or suspended
+ * @host_grant: an explicit host vendor request supplied the additional budget
+ * @configured: a configuration was selected in this bus session, even if suspended
+ * @connected: actual host bus activity was observed, preserved across suspend
+ * @suspended: the bus is suspended; an earlier host grant has been revoked
+ */
+struct usb_gadget_current_budget {
+	const struct device_node *of_node;
+	unsigned int current_ma;
+	bool host_grant;
+	bool configured;
+	bool connected;
+	bool suspended;
+};
+
 /**
  * struct usb_gadget - represents a usb device
  * @work: (internal use) Workqueue to be used for sysfs_notify()
@@ -386,6 +407,13 @@ struct usb_gadget_ops {
  * @out_epnum: last used out ep number
  * @in_epnum: last used in ep number
  * @mA: last set mA value
+ * @current_base_ma: standard configuration current authorization
+ * @current_extra_ma: signed extra current from an opt-in host grant
+ * @current_host_grant: an explicit host grant is active
+ * @current_suspended: composite bus suspend revokes active authorization
+ * @current_configured: a configuration was selected in this bus session
+ * @current_bus_connected: a host reset/address/configuration or SETUP was seen
+ * @current_budget_enabled: board opted into USB current authorization
  * @otg_caps: OTG capabilities of this gadget.
  * @sg_supported: true if we can handle scatter-gather
  * @is_otg: True if the USB device port uses a Mini-AB jack, so that the
@@ -462,6 +490,14 @@ struct usb_gadget {
 	unsigned			out_epnum;
 	unsigned			in_epnum;
 	unsigned			mA;
+	/* Opt-in current authorization, protected by state_lock. */
+	unsigned int			current_base_ma;
+	s16				current_extra_ma;
+	bool				current_host_grant;
+	bool				current_suspended;
+	bool				current_configured;
+	bool				current_bus_connected;
+	bool				current_budget_enabled;
 	struct usb_otg_caps		*otg_caps;
 
 	unsigned			sg_supported:1;
@@ -637,6 +673,16 @@ static inline int gadget_is_otg(struct usb_gadget *g)
 /*-------------------------------------------------------------------------*/
 
 #if IS_ENABLED(CONFIG_USB_GADGET)
+
+int usb_gadget_register_current_notifier(struct notifier_block *nb);
+int usb_gadget_unregister_current_notifier(struct notifier_block *nb);
+int usb_gadget_get_current_budget(const struct device_node *node,
+				  struct usb_gadget_current_budget *budget);
+int usb_gadget_handle_current_grant(struct usb_gadget *gadget,
+				    const struct usb_ctrlrequest *ctrl);
+void usb_gadget_revoke_current_grant(struct usb_gadget *gadget);
+void usb_gadget_current_budget_suspend(struct usb_gadget *gadget, bool suspended);
+
 int usb_gadget_frame_number(struct usb_gadget *gadget);
 int usb_gadget_wakeup(struct usb_gadget *gadget);
 int usb_gadget_set_remote_wakeup(struct usb_gadget *gadget, int set);
@@ -651,6 +697,21 @@ int usb_gadget_deactivate(struct usb_gadget *gadget);
 int usb_gadget_activate(struct usb_gadget *gadget);
 int usb_gadget_check_config(struct usb_gadget *gadget);
 #else
+
+static inline int usb_gadget_register_current_notifier(struct notifier_block *nb)
+{ return -ENODEV; }
+static inline int usb_gadget_unregister_current_notifier(struct notifier_block *nb)
+{ return 0; }
+static inline int usb_gadget_get_current_budget(const struct device_node *node,
+						struct usb_gadget_current_budget *budget)
+{ return -ENODEV; }
+static inline int usb_gadget_handle_current_grant(struct usb_gadget *gadget,
+						  const struct usb_ctrlrequest *ctrl)
+{ return -EOPNOTSUPP; }
+static inline void usb_gadget_revoke_current_grant(struct usb_gadget *gadget) { }
+static inline void usb_gadget_current_budget_suspend(struct usb_gadget *gadget,
+						     bool suspended) { }
+
 static inline int usb_gadget_frame_number(struct usb_gadget *gadget)
 { return 0; }
 static inline int usb_gadget_wakeup(struct usb_gadget *gadget)
