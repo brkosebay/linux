@@ -12,4 +12,29 @@
 / {
 	compatible = "apple,j71t", "apple,s8003", "apple,arm-platform";
 	model = "Apple iPad 5 (Wi-Fi) (TSMC)";
+
+	aliases {
+		nvme-hmb = &nvme_hmb; /* Used by loader */
+	};
+
+	reserved-memory {
+		nvme_hmb: nvme-hmb@0 {
+			reg = <0 0 0 0>; /* To be filled by loader */
+			no-map;
+		};
+	};
+};
+
+&pcie0_dart0 {
+	status = "okay";
+};
+
+&pcie0_dart1 {
+	status = "okay";
+};
+
+&pcie0 {
+	apple,lane-cfg = <1>;
+	apple,nvme-hmb = <&nvme_hmb>;
+	status = "okay";
 };
