@@ -11,6 +11,7 @@
 #include <linux/firmware.h>
 #include <linux/dmi.h>
 #include <linux/of.h>
+#include <linux/property.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -710,6 +711,91 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 }
 EXPORT_SYMBOL_GPL(btbcm_initialize);
 
+/* Public identities are in HCI byte order here; the firmware file is BMac. */
+static bool btbcm_j71t_bdaddr_valid(const bdaddr_t *addr)
+{
+	return bacmp(addr, BDADDR_ANY) && !(addr->b[5] & 1);
+}
+
+static int btbcm_j71t_set_bdaddr(struct hci_dev *hdev)
+{
+	struct fwnode_handle *fwnode;
+	struct hci_rp_read_bd_addr *rp;
+	const struct firmware *fw;
+	struct sk_buff *skb;
+	const char *source;
+	bdaddr_t addr;
+	int err;
+
+	if (!hdev->dev.parent ||
+	    !of_device_is_compatible(hdev->dev.parent->of_node,
+				     "apple,j71t-bcm4355-bt"))
+		return 0;
+
+	fwnode = dev_fwnode(hdev->dev.parent);
+	if (fwnode_property_count_u8(fwnode, "local-bd-address") == sizeof(addr) &&
+	    !fwnode_property_read_u8_array(fwnode, "local-bd-address",
+					   (u8 *)&addr, sizeof(addr))) {
+		if (hci_test_quirk(hdev, HCI_QUIRK_BDADDR_PROPERTY_BROKEN)) {
+			bdaddr_t swapped;
+
+			baswap(&swapped, &addr);
+			bacpy(&addr, &swapped);
+		}
+	} else {
+		bacpy(&addr, BDADDR_ANY);
+	}
+
+	source = "device-tree";
+	if (!btbcm_j71t_bdaddr_valid(&addr)) {
+		/* Direct loading cannot stall a RAM boot in the sysfs fallback. */
+		err = request_firmware_direct(&fw, "apple/j71t-BMac.bin",
+					      &hdev->dev);
+		if (err) {
+			bt_dev_err(hdev, "BCM: No valid J71t device address (%d)", err);
+			return err;
+		}
+		if (fw->size != sizeof(addr)) {
+			release_firmware(fw);
+			return -EINVAL;
+		}
+		/* Resolved iOS BMac is stored in display/network byte order. */
+		baswap(&addr, (const bdaddr_t *)fw->data);
+		release_firmware(fw);
+		if (!btbcm_j71t_bdaddr_valid(&addr))
+			return -EINVAL;
+		source = "private BMac";
+	}
+
+	/* Program after the last Patchram reset, before the default-address check. */
+	err = btbcm_set_bdaddr(hdev, &addr);
+	if (err)
+		return err;
+
+	skb = __hci_cmd_sync(hdev, HCI_OP_READ_BD_ADDR, 0, NULL,
+			     HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb))
+		return PTR_ERR(skb);
+	if (skb->len != sizeof(*rp)) {
+		kfree_skb(skb);
+		return -EIO;
+	}
+	rp = (struct hci_rp_read_bd_addr *)skb->data;
+	err = rp->status || bacmp(&rp->bdaddr, &addr) ? -EIO : 0;
+	kfree_skb(skb);
+	if (err) {
+		bt_dev_err(hdev, "BCM: J71t device address readback failed");
+		return err;
+	}
+
+	/* Keep MGMT reconfiguration consistent with the checked controller state. */
+	bacpy(&hdev->public_addr, &addr);
+	hci_clear_quirk(hdev, HCI_QUIRK_INVALID_BDADDR);
+	hci_clear_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
+	bt_dev_info(hdev, "BCM: Using %s device address (%pMR)", source, &addr);
+	return 0;
+}
+
 int btbcm_finalize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud_mode)
 {
 	int err;
@@ -720,6 +806,10 @@ int btbcm_finalize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud_m
 		if (err)
 			return err;
 	}
+
+	err = btbcm_j71t_set_bdaddr(hdev);
+	if (err)
+		return err;
 
 	btbcm_check_bdaddr(hdev);
 
