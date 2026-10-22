@@ -3404,6 +3404,13 @@ static void nvme_reset_work(struct work_struct *work)
 	result = nvme_pci_enable(dev);
 	if (result)
 		goto out_unlock;
+	if (!dev->ctrl.admin_q) {
+		/* First enable, deferred from nvme_probe() (Apple ANS) */
+		result = nvme_alloc_admin_tag_set(&dev->ctrl, &dev->admin_tagset,
+				&nvme_mq_admin_ops, sizeof(struct nvme_iod));
+		if (result)
+			goto out_unlock;
+	}
 	nvme_unquiesce_admin_queue(&dev->ctrl);
 	mutex_unlock(&dev->shutdown_lock);
 
@@ -3783,6 +3790,26 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out_dev_unmap;
 
 	dev_info(dev->ctrl.device, "pci function %s\n", dev_name(&pdev->dev));
+
+	/*
+	 * Apple ANS: do the first enable from reset_work on nvme_reset_wq, like
+	 * nvme-pci did before it went synchronous. The probe itself runs in the
+	 * async domain that kernel_init() waits for before starting /init, so a
+	 * bring-up that hangs or times out (CAP.TO can be minutes) would
+	 * otherwise keep the shell from ever coming up.
+	 */
+	if (dev->dma_ops == &nvme_pci_apple_ans_ops) {
+		if (!nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_RESETTING)) {
+			result = -EBUSY;
+			goto out_release_iod_mempool;
+		}
+		pci_set_drvdata(pdev, dev);
+		dev_info(dev->ctrl.device,
+			 "Apple ANS: controller bring-up continues in the background\n");
+		queue_work(nvme_reset_wq, &dev->ctrl.reset_work);
+		nvme_put_ctrl(&dev->ctrl);
+		return 0;
+	}
 
 	result = nvme_pci_enable(dev);
 	if (result)
