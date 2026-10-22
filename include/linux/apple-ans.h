@@ -21,12 +21,19 @@ struct device;
 int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 			const u64 *pages, unsigned int npages,
 			bool to_memory, dma_addr_t *iova);
+/* 1 if the endpoint's PCIe link is up, 0 if down, <0 on error */
+int apple_ans_link_up(struct device *dev);
 #else
 static inline int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 				      const u64 *pages, unsigned int npages,
 				      bool to_memory, dma_addr_t *iova)
 {
 	return -EOPNOTSUPP;
+}
+
+static inline int apple_ans_link_up(struct device *dev)
+{
+	return 1;
 }
 #endif
 
