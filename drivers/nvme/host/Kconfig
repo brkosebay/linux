@@ -14,6 +14,21 @@ config BLK_DEV_NVME
 	  To compile this driver as a module, choose M here: the
 	  module will be called nvme.
 
+config NVME_PCI_READ_ONLY
+	bool "Refuse writes to NVMe PCI devices"
+	depends on BLK_DEV_NVME
+	default y if ARCH_APPLE
+	help
+	  Make every NVMe PCI controller read-only. Namespaces are always
+	  marked read-only and the driver refuses, before submission, every
+	  command that could modify the medium or the controller's persistent
+	  state: I/O queues may only read and flush, and the admin queue only
+	  accepts identify, log/feature reads, queue management and a short
+	  list of volatile Set Features. There is no runtime override.
+
+	  This exists for bring-up on Apple A9/A10 iDevices, whose internal
+	  NVMe disk holds the iOS installation. Say N on any other system.
+
 config NVME_MULTIPATH
 	bool "NVMe multipath support"
 	depends on NVME_CORE
