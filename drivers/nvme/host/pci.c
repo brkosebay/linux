@@ -3499,13 +3499,21 @@ static void nvme_reset_work(struct work_struct *work)
 
 static int nvme_pci_reg_read32(struct nvme_ctrl *ctrl, u32 off, u32 *val)
 {
-	*val = readl(to_nvme_dev(ctrl)->bar + off);
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+
+	if (off == NVME_REG_CSTS && dev->dma_ops && dev->dma_ops->read_csts)
+		return dev->dma_ops->read_csts(dev, val);
+	*val = readl(dev->bar + off);
 	return 0;
 }
 
 static int nvme_pci_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val)
 {
-	writel(val, to_nvme_dev(ctrl)->bar + off);
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+
+	if (off == NVME_REG_CC && dev->dma_ops && dev->dma_ops->write_cc)
+		return dev->dma_ops->write_cc(dev, val);
+	writel(val, dev->bar + off);
 	return 0;
 }
 

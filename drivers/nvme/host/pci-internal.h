@@ -37,6 +37,9 @@ struct nvme_pci_dma_ops {
 	void (*exit)(struct nvme_dev *dev);
 	int (*preinit)(struct nvme_dev *dev);
 	int (*prepare_enable)(struct nvme_dev *dev);
+	/* Optional: replace the CC write and the CSTS read (bring-up checks) */
+	int (*write_cc)(struct nvme_dev *dev, u32 cc);
+	int (*read_csts)(struct nvme_dev *dev, u32 *csts);
 	blk_status_t (*map_data)(struct request *req);
 	bool (*unmap_data)(struct request *req);
 	u32 (*queue_depth)(struct nvme_dev *dev, u32 depth);
