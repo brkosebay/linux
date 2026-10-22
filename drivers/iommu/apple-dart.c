@@ -727,11 +727,11 @@ static void apple_dart_s5l8960x_attach_config(struct apple_dart *dart)
 	 * comes back in its reset state, with an error status left over from
 	 * before Linux. Clear that so a later read means a new fault.
 	 */
-	dev_info(dart->dev,
-		 "attach: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x (re-applying %#x/%#x/%#x, clearing the error)\n",
-		 readl(dart->regs + DART_S5L8960X_TCR), reflector, fetch, diag,
-		 error, readl(dart->regs + DART_S5L8960X_ERROR_ADDR),
-		 dart->error_reflector, dart->fetch_config, dart->diag_config);
+	dev_dbg(dart->dev,
+		"attach: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x (re-applying %#x/%#x/%#x, clearing the error)\n",
+		readl(dart->regs + DART_S5L8960X_TCR), reflector, fetch, diag,
+		error, readl(dart->regs + DART_S5L8960X_ERROR_ADDR),
+		dart->error_reflector, dart->fetch_config, dart->diag_config);
 	apple_dart_s5l8960x_hw_config(dart);
 	writel(error, dart->regs + DART_S5L8960X_ERROR);
 }
@@ -1478,14 +1478,14 @@ static int apple_dart_s5l8960x_parse_config(struct apple_dart *dart)
 						      &dart->diag_config);
 
 	/* All-ones: the DART isn't powered yet (A9 PCIe: until the port is) */
-	dev_info(dart->dev,
-		 "boot state: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x\n",
-		 readl(dart->regs + DART_S5L8960X_TCR),
-		 readl(dart->regs + DART_S5L8960X_ERROR_REFLECTOR),
-		 readl(dart->regs + DART_S5L8960X_FETCH_CONFIG),
-		 readl(dart->regs + DART_S5L8960X_DIAG_CONFIG),
-		 readl(dart->regs + DART_S5L8960X_ERROR),
-		 readl(dart->regs + DART_S5L8960X_ERROR_ADDR));
+	dev_dbg(dart->dev,
+		"boot state: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x\n",
+		readl(dart->regs + DART_S5L8960X_TCR),
+		readl(dart->regs + DART_S5L8960X_ERROR_REFLECTOR),
+		readl(dart->regs + DART_S5L8960X_FETCH_CONFIG),
+		readl(dart->regs + DART_S5L8960X_DIAG_CONFIG),
+		readl(dart->regs + DART_S5L8960X_ERROR),
+		readl(dart->regs + DART_S5L8960X_ERROR_ADDR));
 	return 0;
 }
 
