@@ -64,3 +64,5 @@ RUSTFLAGS_nova-core/nova_core.o += \
 # Allow nova-drm to import nova-core's types.
 $(obj)/drm/nova/nova.o: $(obj)/nova-core/nova_core.o
 RUSTFLAGS_drm/nova/nova.o := -L $(objtree)/$(obj)/nova-core --extern nova_core
+
+obj-$(CONFIG_APPLE_G5P_DIAG) += apple-g5p/

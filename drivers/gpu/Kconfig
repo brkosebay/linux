@@ -12,3 +12,12 @@ config GPU_BUDDY_KUNIT_TEST
        default KUNIT_ALL_TESTS
        help
          KUnit tests for the GPU buddy allocator.
+
+config APPLE_G5P_DIAG
+	bool "Apple A9/G5P staged firmware diagnostic"
+	depends on ARCH_APPLE && OF && PM
+	select FW_LOADER
+	select CRYPTO_LIB_SHA256
+	help
+	  Experimental platform driver for the S8003 G5P META firmware.
+	  Inert unless a9_gpu_diag.enable=1 is specified. No rendering support.
