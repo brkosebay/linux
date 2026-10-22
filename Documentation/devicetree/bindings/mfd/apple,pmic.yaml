@@ -52,7 +52,11 @@ properties:
     const: 1
 
   "#size-cells":
-    const: 1
+    enum: [0, 1]
+    description: |
+      Zero describes non-MMIO register addresses on the PMIC bus. NVMEM
+      children then provide their register count with the size property.
+      One preserves the legacy register-address and byte-count tuples.
 
   gpio:
     $ref: /schemas/gpio/apple,d2365-pmic-gpio.yaml
