@@ -145,7 +145,7 @@ static int nvme_pci_apple_ans_reset_dma(struct nvme_dev *dev)
 	int ret;
 
 	for (tag = 0; tag < APPLE_ANS_NVMMU_MAX_REQS; tag++) {
-		ret = apple_ans_nvmmu_map(dev->dev, tag, NULL, 0, NULL);
+		ret = apple_ans_nvmmu_map(dev->dev, tag, NULL, 0, false, NULL);
 		if (ret)
 			return ret;
 	}
@@ -276,7 +276,7 @@ static void nvme_pci_apple_ans_free_req(struct nvme_dev *dev,
 	if (tag >= APPLE_ANS_NVMMU_MAX_REQS)
 		return;
 
-	ret = apple_ans_nvmmu_map(dev->dev, tag, NULL, 0, NULL);
+	ret = apple_ans_nvmmu_map(dev->dev, tag, NULL, 0, false, NULL);
 	if (ret)
 		dev_warn_ratelimited(dev->dev,
 				     "failed to release ANS DMA slot %u: %d\n",
@@ -431,7 +431,8 @@ static blk_status_t nvme_pci_apple_ans_map_data(struct request *req)
 		goto out_unmap;
 	}
 
-	ret = apple_ans_nvmmu_map(dev->dev, tag, areq->pages, npages, &flatdma);
+	ret = apple_ans_nvmmu_map(dev->dev, tag, areq->pages, npages,
+				  rq_dma_dir(req) == DMA_FROM_DEVICE, &flatdma);
 	if (ret) {
 		status = errno_to_blk_status(ret);
 		if (status == BLK_STS_NOTSUPP)

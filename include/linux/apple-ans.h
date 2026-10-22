@@ -14,13 +14,17 @@ struct device;
 #define APPLE_ANS_NVMMU_PAGE_SIZE	4096
 
 #if IS_REACHABLE(CONFIG_PCIE_APPLE_H9P)
+/*
+ * Map @npages 4K pages for FlatDMA slot @tag, or retire the slot when
+ * @npages is 0. @to_memory: the device writes host memory (NVMe Read).
+ */
 int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 			const u64 *pages, unsigned int npages,
-			dma_addr_t *iova);
+			bool to_memory, dma_addr_t *iova);
 #else
 static inline int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 				      const u64 *pages, unsigned int npages,
-				      dma_addr_t *iova)
+				      bool to_memory, dma_addr_t *iova)
 {
 	return -EOPNOTSUPP;
 }
