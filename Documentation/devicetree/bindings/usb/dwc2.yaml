@@ -78,6 +78,12 @@ properties:
               - apple,t8015-dwc2
           - const: apple,dwc2
 
+  apple,host-current-budget:
+    type: boolean
+    description: |
+      Enable Apple device-mode current-limit requests and source-budget
+      notifications, bounded to the J71t 2400 mA platform maximum.
+
   reg:
     maxItems: 1
 
