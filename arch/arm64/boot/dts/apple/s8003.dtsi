@@ -66,3 +66,19 @@
  * the S8003 (APL1022) on 16nm. There are some minor differences
  * such as timing in cpufreq state transistions.
  */
+
+/* j71t ADT: two GPU windows; explicitly activated diagnostic only. */
+&{/soc} {
+	gpu_diag: gpu@201000000 {
+		compatible = "gpu,s8003";
+		reg = <0x2 0x01000000 0x0 0x100000>,
+		      <0x2 0x01e00000 0x0 0x100000>;
+		reg-names = "adt-r0", "adt-r1";
+		power-domains = <&ps_gfx>;
+		interrupts = <AIC_IRQ 170 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 171 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 172 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 173 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 174 IRQ_TYPE_LEVEL_HIGH>;
+	};
+};
