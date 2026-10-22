@@ -4,14 +4,14 @@
 $id: http://devicetree.org/schemas/pci/apple,t8010-pcie.yaml#
 $schema: http://devicetree.org/meta-schemas/core.yaml#
 
-title: Apple T8010 PCIe host controller
+title: Apple S8003 and T8010 PCIe host controller
 
 maintainers:
   - Paul Praschl <praschlpaul@g-p.at>
 
 description: |
-  Apple A10/T8010 devices use the H9P PCIe root complex for internal
-  storage and Wi-Fi. It exposes one ECAM window shared by up to four root
+  Apple A9/S8003 (TSMC) and A10/T8010 devices use the H8P/H9P PCIe root
+  complex for internal storage and Wi-Fi. It exposes one ECAM window shared by up to four root
   ports, controller-specific PHY and port register windows, and a local MSI
   block.
 
@@ -31,7 +31,9 @@ allOf:
 
 properties:
   compatible:
-    const: apple,t8010-pcie
+    enum:
+      - apple,s8003-pcie
+      - apple,t8010-pcie
 
   reg:
     maxItems: 9
@@ -72,13 +74,28 @@ properties:
       - const: ref
 
   power-domains:
-    maxItems: 3
+    minItems: 3
+    maxItems: 7
 
   power-domain-names:
+    minItems: 3
     items:
       - const: core
       - const: aux
       - const: ref
+      - const: link0
+      - const: link1
+      - const: link2
+      - const: link3
+
+  apple,lane-cfg:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    maximum: 15
+    default: 0
+    description:
+      Lane configuration of the root complex, the "lane-cfg" property of the
+      Apple device tree apcie node. Programmed into the common control
+      register together with the PHY init request.
 
   devpwr-gpios:
     description:
@@ -124,10 +141,21 @@ patternProperties:
       clkreq-gpios:
         maxItems: 1
 
+      max-link-speed:
+        description:
+          Target link speed of the root port. Defaults to 3 (8 GT/s) for
+          port 0 on T8010, 2 (5 GT/s) for port 0 on S8003 and 1 otherwise.
+
+      apple,nvme-mode:
+        type: boolean
+        description:
+          The port carries the ANS NVMe endpoint (ADT "nvme-mode"); S8003
+          then switches the root complex into NVMe mode before powering the
+          port.
+
     required:
       - reg
       - reset-gpios
-      - clkreq-gpios
 
     additionalProperties: true
 
@@ -149,6 +177,16 @@ required:
   - apple,nvmmu-iova
   - apple,nvme-hmb
   - '#interrupt-cells'
+
+if:
+  properties:
+    compatible:
+      const: apple,t8010-pcie
+then:
+  patternProperties:
+    '^pci@[0-3],0$':
+      required:
+        - clkreq-gpios
 
 unevaluatedProperties: false
 
