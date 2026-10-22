@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Bounded, explicitly armed J71t D2365 charging experiment. */
+/* Guarded J71t D2365 charging from verified source-current allowances. */
 #include <linux/bitops.h>
 #include <linux/delay.h>
 #include <linux/devm-helpers.h>
@@ -25,6 +25,8 @@
 #define J71T_CHARGE_CODE 50 /* 2500 mA, still bounded by 0xa0c[5:0]. */
 #define J71T_REQUEST_UA 2400000
 
+static const int j71t_budgets_ua[] = { 500000, 1000000, 2100000, 2400000 };
+
 struct j71t_charger {
 	struct device *dev;
 	struct regmap *map;
@@ -33,6 +35,10 @@ struct j71t_charger {
 	struct mutex lock;
 	struct delayed_work work;
 	u8 input_code;
+	u8 input_codes[ARRAY_SIZE(j71t_budgets_ua)];
+	u8 charge_code;
+	int budget_ua;
+	int user_limit_ua;
 	u8 old_control;
 	u8 old_input;
 	u8 old_charge;
@@ -40,15 +46,18 @@ struct j71t_charger {
 	bool saved;
 	bool active;
 	bool stopping;
+	bool disabled;
+	bool faulted;
 };
 
-/* AppleD2365PMU 0x6bc07ec high branch, then 0x6bbff6c encoder. */
-static int j71t_calibrate(const u8 *data, size_t size, u8 *code)
+/* AppleD2365PMU 0x6bc07ec middle/high branches, then 0x6bbff6c. */
+static int j71t_calibrate_budget(const u8 *data, size_t size, int target_ma, u8 *code)
 {
 	s64 point[5], slope, gain, result, ma;
 	int i;
 
-	if (size != 24 || get_unaligned_le32(data + 20) != 1)
+	if (!data || size != 24 || target_ma < 500 || target_ma > 2400 ||
+	    get_unaligned_le32(data + 20) != 1)
 		return -EINVAL;
 	for (i = 0; i < 5; i++) {
 		point[i] = (s32)get_unaligned_le32(data + i * 4);
@@ -56,16 +65,39 @@ static int j71t_calibrate(const u8 *data, size_t size, u8 *code)
 		    (i && point[i] <= point[i - 1]))
 			return -ERANGE;
 	}
-	slope = div_s64(point[4] - point[3], 30);
+	if (target_ma < 1500) {
+		slope = div_s64(point[2] - point[1], 53);
+		gain = div_s64(point[1] - point[2] + (1025LL << 16), 525);
+		result = ((gain * ((target_ma - 475LL) * 65536)) >> 16) -
+			 point[1] + (925LL << 16);
+	} else {
+		slope = div_s64(point[4] - point[3], 30);
+		gain = div_s64(point[3] - point[4] + (600LL << 16), 300);
+		result = ((gain * ((target_ma - 2100LL) * 65536)) >> 16) -
+			 point[3] + (4125LL << 16);
+	}
 	if (slope < (8LL << 16) || slope > (12LL << 16))
 		return -ERANGE;
-	gain = div_s64(point[3] - point[4] + (600LL << 16), 300);
-	result = ((gain * (300LL << 16)) >> 16) - point[3] + (4125LL << 16);
 	ma = result >> 16;
-	if (ma < 75 || ma > 2400)
+	if (ma < 75 || ma > target_ma)
 		return -ERANGE;
 	*code = div_s64((ma * 8 - 600) & 0xfff8, 100);
 	return *code <= 0xba ? 0 : -ERANGE;
+}
+
+static int j71t_calibrate(const u8 *data, size_t size, u8 *code)
+{
+	return j71t_calibrate_budget(data, size, 2400, code);
+}
+
+static int j71t_choose_budget(int source_ua)
+{
+	int i;
+
+	for (i = ARRAY_SIZE(j71t_budgets_ua) - 1; i >= 0; i--)
+		if (source_ua >= j71t_budgets_ua[i])
+			return i;
+	return -ERANGE;
 }
 
 static int j71t_read(struct j71t_charger *charger, unsigned int reg, u8 *value)
@@ -117,6 +149,18 @@ static int j71t_online(struct j71t_charger *charger)
 	return ret ? ret : !!value.intval;
 }
 
+static int j71t_source_limit(struct j71t_charger *charger)
+{
+	union power_supply_propval value;
+	int ret;
+
+	if (!charger->psy)
+		return -EAGAIN;
+	ret = power_supply_get_property_from_supplier(charger->psy,
+						      POWER_SUPPLY_PROP_CURRENT_MAX, &value);
+	return ret ? ret : value.intval;
+}
+
 static int j71t_battery_safe(void)
 {
 	struct power_supply *battery;
@@ -144,7 +188,7 @@ out:
 	return ret;
 }
 
-/* Never re-arm on reconnection: a new owner-authorized request is required. */
+/* Restore the original handoff snapshot before changing policy ownership. */
 static int j71t_restore(struct j71t_charger *charger)
 {
 	int ret, first = 0;
@@ -178,18 +222,23 @@ static int j71t_guard(struct j71t_charger *charger)
 
 	if (ret != 1)
 		return ret < 0 ? ret : -ENOLINK;
+	ret = j71t_source_limit(charger);
+	if (ret < charger->budget_ua)
+		return ret < 0 ? ret : -ERANGE;
 	ret = j71t_battery_safe();
 	if (ret)
 		return ret;
 	ret = j71t_read(charger, J71T_STATUS, &status);
 	if (ret)
 		return ret;
-	if (status & (J71T_CHARGE_TIMEOUT | J71T_CHARGE_END))
+	if (status & J71T_CHARGE_TIMEOUT)
+		return -ETIME;
+	if (status & J71T_CHARGE_END)
 		return -EBUSY;
 	ret = j71t_read(charger, J71T_MAX_CHARGE_CURRENT, &cap);
 	if (ret)
 		return ret;
-	return (cap & 0x3f) >= J71T_CHARGE_CODE ? 0 : -ERANGE;
+	return (cap & 0x3f) >= charger->charge_code ? 0 : -ERANGE;
 }
 
 static int j71t_enable(struct j71t_charger *charger)
@@ -199,8 +248,11 @@ static int j71t_enable(struct j71t_charger *charger)
 	if (!charger->calibrated)
 		return -ENODATA;
 	ret = j71t_guard(charger);
-	if (ret)
+	if (ret) {
+		if (ret != -ENOLINK && ret != -ERANGE && ret != -EBUSY && ret != -EAGAIN)
+			charger->faulted = true;
 		return ret;
+	}
 	if (charger->active)
 		return 0;
 	if (charger->saved)
@@ -218,7 +270,7 @@ static int j71t_enable(struct j71t_charger *charger)
 	/* Same three controls as iOS; no voltage/watchdog/IRQ/cap writes. */
 	ret = j71t_set_suspend(charger, J71T_INPUT_SUSPEND);
 	if (!ret)
-		ret = j71t_write_checked(charger, J71T_CHARGE_CURRENT, J71T_CHARGE_CODE);
+		ret = j71t_write_checked(charger, J71T_CHARGE_CURRENT, charger->charge_code);
 	if (!ret)
 		ret = j71t_write_checked(charger, J71T_INPUT_LIMIT, charger->input_code);
 	if (!ret)
@@ -228,13 +280,13 @@ static int j71t_enable(struct j71t_charger *charger)
 	if (!ret)
 		ret = j71t_guard(charger);
 	if (ret) {
+		charger->faulted = true;
 		j71t_restore(charger);
 		return ret;
 	}
 	charger->active = true;
-	dev_info(charger->dev,
-		 "explicit Mac input budget 2400 mA: input 0x%02x, battery limit 2500 mA\n",
-		 charger->input_code);
+	dev_info(charger->dev, "source budget %d mA: input 0x%02x, battery limit %d mA\n",
+		 charger->budget_ua / 1000, charger->input_code, charger->charge_code * 50);
 	return 0;
 }
 
@@ -243,9 +295,13 @@ static void j71t_policy_work(struct work_struct *work)
 	struct j71t_charger *charger = container_of(to_delayed_work(work),
 							  struct j71t_charger, work);
 	u8 input, control, charge;
-	int ret = 0;
+	int ret = 0, source_ua, index;
 
 	mutex_lock(&charger->lock);
+	source_ua = j71t_source_limit(charger);
+	if (charger->user_limit_ua > 0)
+		source_ua = min(source_ua, charger->user_limit_ua);
+	index = j71t_choose_budget(source_ua);
 	if (charger->active) {
 		ret = j71t_guard(charger);
 		if (!ret)
@@ -255,9 +311,15 @@ static void j71t_policy_work(struct work_struct *work)
 		if (!ret)
 			ret = j71t_read(charger, J71T_CHARGE_CURRENT, &charge);
 		if (!ret && (input != charger->input_code ||
-			     (control & J71T_INPUT_SUSPEND) || charge != J71T_CHARGE_CODE))
+			     (control & J71T_INPUT_SUSPEND) || charge != charger->charge_code)) {
 			ret = -EIO;
+			charger->faulted = true;
+		}
+		if (!ret && (index < 0 || charger->budget_ua != j71t_budgets_ua[index]))
+			ret = -EAGAIN;
 		if (ret) {
+			if (ret != -ENOLINK && ret != -ERANGE && ret != -EBUSY && ret != -EAGAIN)
+				charger->faulted = true;
 			dev_warn(charger->dev, "charging request revoked: %d\n", ret);
 			charger->active = false;
 		}
@@ -266,6 +328,14 @@ static void j71t_policy_work(struct work_struct *work)
 		ret = j71t_restore(charger);
 		if (ret)
 			dev_err_ratelimited(charger->dev, "charger restore pending: %d\n", ret);
+	}
+	if (!charger->stopping && !charger->disabled && !charger->faulted &&
+	    charger->calibrated && !charger->active && !charger->saved && index >= 0) {
+		charger->budget_ua = j71t_budgets_ua[index];
+		charger->input_code = charger->input_codes[index];
+		/* ADT min-charge-capable-current is 1000 mA: input-only below it. */
+		charger->charge_code = charger->budget_ua >= 1000000 ? J71T_CHARGE_CODE : 0;
+		j71t_enable(charger);
 	}
 	if (!charger->stopping)
 		mod_delayed_work(system_power_efficient_wq, &charger->work,
@@ -288,6 +358,14 @@ static int j71t_get_property(struct power_supply *psy, enum power_supply_propert
 		online = j71t_online(charger);
 		ret = online < 0 ? online : 0;
 		value->intval = online == 1;
+		break;
+	case POWER_SUPPLY_PROP_USB_TYPE:
+		ret = power_supply_get_property_from_supplier(psy,
+							      POWER_SUPPLY_PROP_USB_TYPE, value);
+		break;
+	case POWER_SUPPLY_PROP_SCOPE:
+		value->intval = POWER_SUPPLY_SCOPE_SYSTEM;
+		ret = 0;
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		ret = j71t_read(charger, J71T_INPUT_LIMIT, &raw);
@@ -320,18 +398,34 @@ static int j71t_set_property(struct power_supply *psy, enum power_supply_propert
 			     const union power_supply_propval *value)
 {
 	struct j71t_charger *charger = power_supply_get_drvdata(psy);
-	int ret;
+	int ret, index, source_ua;
 
-	if (prop != POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT ||
-	    (value->intval != 0 && value->intval != J71T_REQUEST_UA))
+	index = j71t_choose_budget(value->intval);
+	if (prop != POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT || value->intval < 0 ||
+	    (value->intval && (index < 0 || j71t_budgets_ua[index] != value->intval)))
 		return -EINVAL;
 	mutex_lock(&charger->lock);
-	if (charger->stopping)
+	source_ua = j71t_source_limit(charger);
+	if (charger->stopping) {
 		ret = -ESHUTDOWN;
-	else if (!value->intval)
+	} else if (!value->intval) {
+		charger->disabled = true;
+		charger->user_limit_ua = 0;
 		ret = j71t_restore(charger);
-	else
-		ret = j71t_enable(charger);
+	} else if (source_ua < value->intval) {
+		ret = source_ua < 0 ? source_ua : -ERANGE;
+	} else {
+		ret = j71t_restore(charger);
+		if (!ret) {
+			charger->disabled = false;
+			charger->faulted = false;
+			charger->user_limit_ua = value->intval;
+			charger->budget_ua = value->intval;
+			charger->input_code = charger->input_codes[index];
+			charger->charge_code = value->intval >= 1000000 ? J71T_CHARGE_CODE : 0;
+			ret = j71t_enable(charger);
+		}
+	}
 	if (!charger->stopping)
 		mod_delayed_work(system_power_efficient_wq, &charger->work, 0);
 	mutex_unlock(&charger->lock);
@@ -356,6 +450,8 @@ static void j71t_external_power_changed(struct power_supply *psy)
 
 static const enum power_supply_property j71t_properties[] = {
 	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_USB_TYPE,
+	POWER_SUPPLY_PROP_SCOPE,
 	POWER_SUPPLY_PROP_STATUS,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT,
@@ -364,6 +460,8 @@ static const enum power_supply_property j71t_properties[] = {
 static const struct power_supply_desc j71t_desc = {
 	.name = "charger",
 	.type = POWER_SUPPLY_TYPE_USB,
+	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) | BIT(POWER_SUPPLY_USB_TYPE_SDP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_APPLE_BRICK_ID),
 	.properties = j71t_properties,
 	.num_properties = ARRAY_SIZE(j71t_properties),
 	.get_property = j71t_get_property,
@@ -377,7 +475,7 @@ static int j71t_probe(struct platform_device *pdev)
 	struct power_supply_config config = {};
 	const struct firmware *fw;
 	struct j71t_charger *charger;
-	int ret;
+	int ret, i;
 
 	charger = devm_kzalloc(&pdev->dev, sizeof(*charger), GFP_KERNEL);
 	if (!charger)
@@ -394,7 +492,16 @@ static int j71t_probe(struct platform_device *pdev)
 		return ret;
 	ret = request_firmware_direct(&fw, "apple/j71t-CBAT.bin", &pdev->dev);
 	if (!ret) {
-		ret = j71t_calibrate(fw->data, fw->size, &charger->input_code);
+		for (i = 0; i < ARRAY_SIZE(j71t_budgets_ua); i++) {
+			if (j71t_budgets_ua[i] == J71T_REQUEST_UA)
+				ret = j71t_calibrate(fw->data, fw->size, &charger->input_codes[i]);
+			else
+				ret = j71t_calibrate_budget(fw->data, fw->size,
+							    j71t_budgets_ua[i] / 1000,
+							    &charger->input_codes[i]);
+			if (ret)
+				break;
+		}
 		release_firmware(fw);
 		charger->calibrated = !ret;
 	}
@@ -409,7 +516,7 @@ static int j71t_probe(struct platform_device *pdev)
 				     "charger supply registration\n");
 	platform_set_drvdata(pdev, charger);
 	mod_delayed_work(system_power_efficient_wq, &charger->work, 0);
-	dev_info(&pdev->dev, "J71t charger: explicit 2400000-uA request required for measured Mac source\n");
+	dev_info(&pdev->dev, "J71t charger: automatic guarded source-current policy\n");
 	return 0;
 }
 
@@ -480,5 +587,5 @@ static struct platform_driver j71t_driver = {
 	},
 };
 module_platform_driver(j71t_driver);
-MODULE_DESCRIPTION("Explicitly armed Apple J71t D2365 charging policy");
+MODULE_DESCRIPTION("Source-aware guarded Apple J71t D2365 charging policy");
 MODULE_LICENSE("GPL");

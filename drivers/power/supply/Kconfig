@@ -351,6 +351,7 @@ config APPLE_BELLATRIX_POWER
 config APPLE_D2365_CHARGER
 	tristate "Apple D2365 charger status"
 	depends on MFD_SIMPLE_MFD_I2C
+	depends on USB_GADGET || !USB_GADGET
 	help
 	  Say Y here to enable charger status reporting and the guarded input-current
 	  policy for the Apple D2365 PMIC found in some T8010 devices.
@@ -359,10 +360,11 @@ config APPLE_D2365_CHARGER
 	  safe battery conditions are present, and leaves charge termination to the
 	  PMIC. It does not configure charge current, charge voltage, or interrupts.
 
-	  J71t also provides read-only CBTL1610 VBUS detection and a separately
-	  armed 2400 mA policy for an owner-verified USB source. It requires
+	  J71t also provides CBTL1610 source detection and an automatic
+	  current policy using verified Apple USB host grants and resistor
+	  signatures, with a conservative ordinary USB fallback. It requires
 	  private CBAT calibration and safe battery telemetry, preserves the
-	  handoff settings, and revokes the request on disconnect or error.
+	  handoff settings, and restores them on disconnect, suspend or error.
 
 	  The modules are apple_d2365_charger, apple_j71t_charger and
 	  apple_tristar_power.
