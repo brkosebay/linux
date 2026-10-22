@@ -101,7 +101,8 @@ static inline u32 g5p_catalogue_entry(u64 pa)
 
 static inline u64 g5p_directory_entry(u64 pa)
 {
-	return (pa << 3) | 3;
+	/* Geometry bytes 3c..3f are 08 05 05 15: size, entry/PA/VA shifts. */
+	return pa | 3;
 }
 
 static inline u64 g5p_leaf_entry(u64 pa, u32 attributes)
