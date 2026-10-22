@@ -2147,6 +2147,8 @@ static void bq27xxx_battery_refresh_cache(struct bq27xxx_device_info *di)
 	if (ret)
 		goto out_error;
 	bq27xxx_cache_value(&cache.temperature, 0, &temperature);
+	/* Optional measurements do not determine safety-sample readiness. */
+	di->cache_ready = true;
 
 	if (bq27xxx_cache_has_prop(di, POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW)) {
 		ret = bq27xxx_battery_read_time(di, BQ27XXX_REG_TTE, &value);
@@ -2192,15 +2194,18 @@ out_error:
 	changed = memcmp(&di->cache, &cache, sizeof(cache)) != 0;
 	di->cache = cache;
 	di->last_update = jiffies;
-	dev_warn_ratelimited(di->dev, "battery cache refresh failed: %d\n",
-			     ret);
+	if (di->cache_ready)
+		dev_warn_ratelimited(di->dev, "battery cache refresh failed: %d\n", ret);
+	else
+		dev_dbg(di->dev, "battery cache warming up: %d\n", ret);
 	if (changed)
 		power_supply_changed(di->bat);
 
 out_unlock:
 	if (!di->removed && di->cache_refresh_ms)
 		queue_delayed_work(system_freezable_wq, &di->work,
-				   msecs_to_jiffies(di->cache_refresh_ms));
+				   msecs_to_jiffies(di->cache_ready ?
+						    di->cache_refresh_ms : 1000));
 	mutex_unlock(&di->lock);
 }
 
@@ -2387,6 +2392,11 @@ static int bq27xxx_battery_get_cached_property(struct power_supply *psy,
 	int ret;
 
 	mutex_lock(&di->lock);
+	/* Presence is also unknown until the first complete safety sample. */
+	if (!di->cache_ready) {
+		ret = -ENODATA;
+		goto out_unlock;
+	}
 	if (psp != POWER_SUPPLY_PROP_PRESENT && di->cache.flags < 0) {
 		ret = di->cache.flags;
 		goto out_unlock;
@@ -2597,8 +2607,10 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 		di->cache_properties = bq27545_cache_props;
 		di->num_cache_properties = ARRAY_SIZE(bq27545_cache_props);
 	}
-	if (di->cache_only)
+	if (di->cache_only) {
 		bq27xxx_battery_init_cache(&di->cache);
+		di->cache_ready = false;
+	}
 
 	psy_desc = devm_kzalloc(di->dev, sizeof(*psy_desc), GFP_KERNEL);
 	if (!psy_desc)

@@ -76,6 +76,8 @@ struct bq27xxx_device_info {
 	struct bq27xxx_reg_cache cache;
 	/* Serve properties only from the periodically populated register cache. */
 	bool cache_only;
+	/* At least one complete cache-only safety sample succeeded. */
+	bool cache_ready;
 	/* Optional transport-specific subset for cache-only operation. */
 	const enum power_supply_property *cache_properties;
 	size_t num_cache_properties;
