@@ -2427,6 +2427,9 @@ static int bq27xxx_battery_get_cached_property(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_NOW:
 		ret = bq27xxx_cached_value(&di->cache.charge_now, val);
+		/* An unavailable optional HDQ sample must not abort the uevent. */
+		if (ret)
+			ret = -ENODATA;
 		break;
 	case POWER_SUPPLY_PROP_CHARGE_FULL:
 		ret = bq27xxx_cached_value(&di->cache.charge_full, val);
