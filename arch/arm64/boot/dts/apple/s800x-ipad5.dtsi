@@ -46,6 +46,21 @@
 	power-domains = <&ps_disp0 &ps_dp>;
 };
 
+/*
+ * The framebuffer depends on the display pipe and eDP link that the boot
+ * loader set up, and both reset when these power-domains are powered off.
+ * That happens on suspend, when genpd powers off the framebuffer's domains
+ * in the noirq phase. Mark them as always on until a display driver can
+ * bring the panel back up.
+ */
+&ps_disp0 {
+	apple,always-on;
+};
+
+&ps_dp {
+	apple,always-on;
+};
+
 &i2c0 {
 	status = "okay";
 
