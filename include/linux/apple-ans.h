@@ -35,6 +35,7 @@ int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 int apple_ans_link_up(struct device *dev);
 int apple_ans_host_state(struct device *dev, struct apple_ans_host_state *st);
 void apple_ans_host_dump(struct device *dev, const char *when);
+void apple_ans_dart_walk(struct device *dev, const char *what, u64 iova);
 #else
 static inline int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 				      const u64 *pages, unsigned int npages,
@@ -55,6 +56,11 @@ static inline int apple_ans_host_state(struct device *dev,
 }
 
 static inline void apple_ans_host_dump(struct device *dev, const char *when)
+{
+}
+
+static inline void apple_ans_dart_walk(struct device *dev, const char *what,
+				       u64 iova)
 {
 }
 #endif

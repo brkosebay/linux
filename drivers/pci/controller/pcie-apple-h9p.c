@@ -24,6 +24,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/msi.h>
 #include <linux/of.h>
@@ -246,6 +247,7 @@ struct apple_h9p_nvmmu {
 	 * bring-up diagnostics. apple-dart owns it.
 	 */
 	void __iomem *dart;
+	u64 dart_base;		/* its apple,dma-range start */
 };
 
 struct apple_h9p_pcie {
@@ -699,6 +701,10 @@ static void apple_h9p_map_dart(struct apple_h9p_pcie *pcie)
 		return;
 	if (of_device_is_compatible(np, "apple,s5l8960x-dart") &&
 	    of_device_is_available(np)) {
+		u64 range[2];
+
+		if (!of_property_read_u64_array(np, "apple,dma-range", range, 2))
+			pcie->nvmmu.dart_base = range[0];
 		/* of_iomap: apple-dart already requested the region */
 		pcie->nvmmu.dart = of_iomap(np, 0);
 		if (pcie->nvmmu.dart &&
@@ -1027,6 +1033,45 @@ void apple_ans_host_dump(struct device *dev, const char *when)
 			 readl(da + H9P_DART_TTBR(2)), readl(da + H9P_DART_TTBR(3)));
 }
 EXPORT_SYMBOL_GPL(apple_ans_host_dump);
+
+/* Port 0 DART, stream 0: what the hardware finds for DART-side @addr */
+static void apple_h9p_dart_walk(struct apple_h9p_pcie *pcie, struct device *dev,
+				const char *what, const char *view, u32 addr)
+{
+	u32 ttbr = readl(pcie->nvmmu.dart + H9P_DART_TTBR(addr >> 30));
+	phys_addr_t pa = (phys_addr_t)(ttbr & GENMASK(23, 0)) << 12;
+	u32 ste_idx = (addr >> 21) & 0x1ff, pte_idx = (addr >> 12) & 0x1ff;
+	u64 ste = 0, pte = 0;
+
+	if ((ttbr & BIT(31)) && pfn_valid(PHYS_PFN(pa))) {
+		ste = READ_ONCE(((u64 *)phys_to_virt(pa))[ste_idx]);
+		pa = ste & GENMASK_ULL(35, 12);
+		if ((ste & BIT(0)) && pfn_valid(PHYS_PFN(pa)))
+			pte = READ_ONCE(((u64 *)phys_to_virt(pa))[pte_idx]);
+	}
+	dev_info(dev, "dart walk %s, %s %#x: TTBR%u %#x -> STE[%#x] %#llx -> PTE[%#x] %#llx\n",
+		 what, view, addr, addr >> 30, ttbr, ste_idx, ste, pte_idx, pte);
+}
+
+/*
+ * Walk the port 0 DART's stream 0 tables for device IOVA @iova, both as the
+ * hardware sees it (window base removed) and raw, to show where Linux put
+ * the entry and where the DART will look.
+ */
+void apple_ans_dart_walk(struct device *dev, const char *what, u64 iova)
+{
+	struct apple_h9p_pcie *pcie = apple_ans_host(dev);
+
+	if (!pcie || !pcie->nvmmu.dart ||
+	    apple_h9p_pcie_device_port(pcie, dev) != 0)
+		return;
+
+	apple_h9p_dart_walk(pcie, dev, what, "dart-side",
+			    (u32)(iova - pcie->nvmmu.dart_base));
+	if (pcie->nvmmu.dart_base)
+		apple_h9p_dart_walk(pcie, dev, what, "raw", (u32)iova);
+}
+EXPORT_SYMBOL_GPL(apple_ans_dart_walk);
 
 int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 			const u64 *pages, unsigned int npages,
