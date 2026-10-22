@@ -30,6 +30,8 @@
 #define BDADDR_BCM4330B1 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb1, 0x30, 0x43}})
 #define BDADDR_BCM4334B0 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb0, 0x34, 0x43}})
 #define BDADDR_BCM4345C5 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc5, 0x45, 0x43}})
+#define BDADDR_BCM4355C0 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc0, 0x55, 0x43}})
+#define BDADDR_BCM4355C1 (&(bdaddr_t) {{0x93, 0x76, 0x00, 0xc1, 0x55, 0x43}})
 #define BDADDR_BCM43341B (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0x1b, 0x34, 0x43}})
 
 #define BCM_FW_NAME_LEN			64
@@ -120,6 +122,12 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
 	 *
 	 * The address AA:AA:AA:AA:AA:AA indicates a BCM43430A1 controller
 	 * with no configured address.
+	 *
+	 * The address 43:55:C0:00:1F:AC indicates a BCM4355C0 controller
+	 * with no configured address.
+	 *
+	 * The address 43:55:C1:00:76:93 indicates a BCM4355C1 controller
+	 * with no configured address.
 	 */
 	if (!bacmp(&bda->bdaddr, BDADDR_BCM20702A0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM20702A1) ||
@@ -128,6 +136,8 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
 	    !bacmp(&bda->bdaddr, BDADDR_BCM4330B1) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM4334B0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM4345C5) ||
+	    !bacmp(&bda->bdaddr, BDADDR_BCM4355C0) ||
+	    !bacmp(&bda->bdaddr, BDADDR_BCM4355C1) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A1) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B)) {
@@ -269,7 +279,7 @@ int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 }
 EXPORT_SYMBOL(btbcm_patchram);
 
-static int btbcm_reset(struct hci_dev *hdev)
+int btbcm_reset(struct hci_dev *hdev)
 {
 	struct sk_buff *skb;
 
@@ -287,6 +297,7 @@ static int btbcm_reset(struct hci_dev *hdev)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(btbcm_reset);
 
 static struct sk_buff *btbcm_read_local_name(struct hci_dev *hdev)
 {
@@ -500,6 +511,7 @@ static const struct bcm_subver_table bcm_uart_subver_table[] = {
 	{ 0x4606, "BCM4324B5"	},	/* 002.006.006 */
 	{ 0x6109, "BCM4335C0"	},	/* 003.001.009 */
 	{ 0x610c, "BCM4354"	},	/* 003.001.012 */
+	{ 0x6214, "BCM4355C1"	},	/* 003.002.020 */
 	{ 0x2122, "BCM4343A0"	},	/* 001.001.034 */
 	{ 0x2209, "BCM43430A1"  },	/* 001.002.009 */
 	{ 0x6119, "BCM4345C0"	},	/* 003.001.025 */
@@ -668,7 +680,11 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	fw_name_count++;
 
 	for (i = 0; i < fw_name_count; i++) {
-		err = firmware_request_nowarn(&fw, fw_name[i], &hdev->dev);
+		/* J71t RAM boots have no firmware helper; fail each name fast. */
+		if (board_name && !strcmp(board_name, "apple,j71t"))
+			err = request_firmware_direct(&fw, fw_name[i], &hdev->dev);
+		else
+			err = firmware_request_nowarn(&fw, fw_name[i], &hdev->dev);
 		if (err == 0) {
 			bt_dev_info(hdev, "%s '%s' Patch",
 				    hw_name ? hw_name : "BCM", fw_name[i]);

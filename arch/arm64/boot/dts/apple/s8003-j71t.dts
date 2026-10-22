@@ -8,6 +8,7 @@
 
 #include "s8003.dtsi"
 #include "s800x-ipad5.dtsi"
+#include "s8003-j71t-periph.dtsi"
 
 / {
 	compatible = "apple,j71t", "apple,s8003", "apple,arm-platform";

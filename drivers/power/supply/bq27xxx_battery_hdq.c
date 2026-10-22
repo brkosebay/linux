@@ -9,6 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/of.h>
 #include <linux/types.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
@@ -25,16 +26,33 @@ static int F_ID;
 module_param(F_ID, int, S_IRUSR);
 MODULE_PARM_DESC(F_ID, "1-wire slave FID for BQ27xxx device");
 
+static const enum power_supply_property bq27545_d111_cache_props[] = {
+	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_PRESENT,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CAPACITY,
+	POWER_SUPPLY_PROP_CAPACITY_LEVEL,
+	POWER_SUPPLY_PROP_TEMP,
+	POWER_SUPPLY_PROP_TECHNOLOGY,
+	POWER_SUPPLY_PROP_CHARGE_NOW,
+	POWER_SUPPLY_PROP_CHARGE_FULL,
+	POWER_SUPPLY_PROP_CYCLE_COUNT,
+	POWER_SUPPLY_PROP_HEALTH,
+	POWER_SUPPLY_PROP_MANUFACTURER,
+};
+
 static int w1_bq27000_read(struct w1_slave *sl, unsigned int reg)
 {
 	u8 val;
+	int ret;
 
 	mutex_lock(&sl->master->bus_mutex);
 	w1_write_8(sl->master, HDQ_CMD_READ | reg);
-	val = w1_read_8(sl->master);
+	ret = w1_read_block(sl->master, &val, 1);
 	mutex_unlock(&sl->master->bus_mutex);
 
-	return val;
+	return ret == 1 ? val : -EIO;
 }
 
 static int bq27xxx_battery_hdq_read(struct bq27xxx_device_info *di, u8 reg,
@@ -74,27 +92,50 @@ static int bq27xxx_battery_hdq_read(struct bq27xxx_device_info *di, u8 reg,
 
 static int bq27xxx_battery_hdq_add_slave(struct w1_slave *sl)
 {
+	const struct of_device_id *match;
 	struct bq27xxx_device_info *di;
+	int ret;
 
 	di = devm_kzalloc(&sl->dev, sizeof(*di), GFP_KERNEL);
 	if (!di)
 		return -ENOMEM;
 
-	dev_set_drvdata(&sl->dev, di);
-
 	di->dev = &sl->dev;
-	di->chip = BQ27000;
-	di->name = "bq27000-battery";
+	match = of_match_node(sl->family->of_match_table, sl->dev.of_node);
+	if (match) {
+		di->chip = (uintptr_t)match->data;
+		di->name = "battery";
+		di->cache_only = true;
+		di->cache_refresh_ms = 30000;
+		if (of_device_is_compatible(sl->dev.of_node,
+					    "apple,d111-bq27545")) {
+			di->cache_properties = bq27545_d111_cache_props;
+			di->num_cache_properties =
+				ARRAY_SIZE(bq27545_d111_cache_props);
+			di->cache_use_remaining_capacity = true;
+		}
+	} else {
+		di->chip = BQ27000;
+		di->name = "bq27000-battery";
+	}
 	di->bus.read = bq27xxx_battery_hdq_read;
 
-	return bq27xxx_battery_setup(di);
+	ret = bq27xxx_battery_setup(di);
+	if (ret)
+		return ret;
+
+	/* The W1 core can retain the slave after a failed add callback. */
+	dev_set_drvdata(&sl->dev, di);
+
+	return 0;
 }
 
 static void bq27xxx_battery_hdq_remove_slave(struct w1_slave *sl)
 {
 	struct bq27xxx_device_info *di = dev_get_drvdata(&sl->dev);
 
-	bq27xxx_battery_teardown(di);
+	if (di)
+		bq27xxx_battery_teardown(di);
 }
 
 static const struct w1_family_ops bq27xxx_battery_hdq_fops = {
@@ -102,9 +143,19 @@ static const struct w1_family_ops bq27xxx_battery_hdq_fops = {
 	.remove_slave	= bq27xxx_battery_hdq_remove_slave,
 };
 
+static const struct of_device_id bq27xxx_battery_hdq_of_match[] = {
+	{ .compatible = "apple,d111-bq27545", .data = (void *)BQ27545 },
+	/* J71t ADT says bq27540; validate this J172 register-map profile. */
+	{ .compatible = "apple,j71t-bq27540", .data = (void *)BQ27545 },
+	{ .compatible = "ti,bq27545-hdq", .data = (void *)BQ27545 },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, bq27xxx_battery_hdq_of_match);
+
 static struct w1_family bq27xxx_battery_hdq_family = {
 	.fid = W1_FAMILY_BQ27000,
 	.fops = &bq27xxx_battery_hdq_fops,
+	.of_match_table = bq27xxx_battery_hdq_of_match,
 };
 
 static int __init bq27xxx_battery_hdq_init(void)
