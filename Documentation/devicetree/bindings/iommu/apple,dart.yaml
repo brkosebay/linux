@@ -61,6 +61,17 @@ properties:
   power-domains:
     maxItems: 1
 
+  apple,dma-range:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    minItems: 4
+    maxItems: 4
+    description:
+      IOVA window <start-hi start-lo size-hi size-lo> for masters that use a
+      one-cell specifier (e.g. through "iommu-map"). DMA addresses outside it
+      are claimed by other agents on the bus, such as the NVMe MMU and the MSI
+      doorbell behind the A9/A10 PCIe root complex. The window only limits
+      IOVA allocation; it is not an offset.
+
   apple,error-reflector:
     $ref: /schemas/types.yaml#/definitions/uint64
     description:

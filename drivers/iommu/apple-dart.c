@@ -225,6 +225,10 @@ struct apple_dart {
 	u32 supports_bypass : 1;
 	u32 four_level : 1;
 
+	/* IOVA window for 1-cell masters (apple,dma-range), default: all of ias */
+	dma_addr_t dma_min;
+	dma_addr_t dma_max;
+
 	struct iommu_group *sid2group[DART_MAX_STREAMS];
 	struct iommu_device iommu;
 
@@ -326,6 +330,11 @@ struct apple_dart_domain {
 struct apple_dart_master_cfg {
 	/* Intersection of DART capabilitles */
 	u32 supports_bypass : 1;
+	/*
+	 * The window came from 5-cell "iommus" args. S5L8960X then indexes
+	 * the page tables relative to the window start (see finalize).
+	 */
+	u32 offset_window : 1;
 
 	/*
 	 * DMA aperture start and end to be overridden by "iommus"' phandle
@@ -788,7 +797,14 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 		goto done;
 	}
 
-	if (dart->hw->type == DART_S5L8960X)
+	/*
+	 * An apple,dma-range window only restricts the IOVA allocator: the
+	 * S5L8960X walks its tables with the raw 32-bit IOVA (iOS decodes a
+	 * fault address as TTBR = IOVA[31:30], L1 = IOVA[29:21], L2 =
+	 * IOVA[20:12] with no base subtracted, and its vm-offset only sets
+	 * where its allocator starts), so don't strip the window base then.
+	 */
+	if (dart->hw->type == DART_S5L8960X && cfg->offset_window)
 		dart_domain->mask = ~cfg->dma_min;
 	else
 		dart_domain->mask = DMA_BIT_MASK(pgtbl_cfg.ias);
@@ -972,8 +988,8 @@ static int apple_dart_of_xlate(struct device *dev,
 	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
 	struct apple_dart *dart = platform_get_drvdata(iommu_pdev);
 	struct apple_dart *cfg_dart;
-	dma_addr_t dma_max = DMA_BIT_MASK(dart->ias);
-	dma_addr_t dma_min = 0;
+	dma_addr_t dma_max = dart->dma_max;
+	dma_addr_t dma_min = dart->dma_min;
 	int i, sid;
 
 	put_device(&iommu_pdev->dev);
@@ -1019,6 +1035,7 @@ static int apple_dart_of_xlate(struct device *dev,
 			return -ENOMEM;
 		/* Will be ANDed with DART capabilities */
 		cfg->supports_bypass = true;
+		cfg->offset_window = args->args_count == 5;
 		/* Will be merged with other DARTs to the common range. */
 		cfg->dma_min = dma_min;
 		cfg->dma_max = dma_max;
@@ -1031,6 +1048,7 @@ static int apple_dart_of_xlate(struct device *dev,
 		}
 		cfg->dma_min = max(dma_min, cfg->dma_min);
 		cfg->dma_max = min(dma_max, cfg->dma_max);
+		cfg->offset_window |= args->args_count == 5;
 	}
 	dev_iommu_priv_set(dev, cfg);
 
@@ -1357,6 +1375,43 @@ static irqreturn_t apple_dart_t8110_irq(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
+/*
+ * apple,dma-range = <start-hi start-lo size-hi size-lo>: the IOVA window of
+ * masters that reference this DART with a 1-cell specifier (e.g. through
+ * "iommu-map"). On the A9/A10 PCIe DARTs this is the ADT vm-offset/vm-size,
+ * 0x80000000 + 0x3c000000: the root complex sends 0x40000000-0x7fffffff to
+ * the NVMMU (FlatDMA), 0xbc000000+ to the NVMMU SART and 0xbffff000 is the
+ * MSI doorbell, so DART IOVAs must stay inside the window. Doing this here,
+ * not with "dma-ranges" on the PCIe node, keeps the CPU's DMA zones intact.
+ */
+static int apple_dart_parse_dma_range(struct apple_dart *dart)
+{
+	u64 range[2];
+	dma_addr_t end;
+
+	dart->dma_min = 0;
+	dart->dma_max = DMA_BIT_MASK(dart->ias);
+
+	if (of_property_read_u64_array(dart->dev->of_node, "apple,dma-range",
+				       range, 2))
+		return 0;
+
+	if (!range[1] || !IS_ALIGNED(range[0], dart->pgsize) ||
+	    !IS_ALIGNED(range[1], dart->pgsize) ||
+	    check_add_overflow(range[0], range[1] - 1, &end) ||
+	    end > DMA_BIT_MASK(dart->ias)) {
+		dev_err(dart->dev, "bad apple,dma-range %#llx+%#llx\n",
+			range[0], range[1]);
+		return -EINVAL;
+	}
+
+	dart->dma_min = range[0];
+	dart->dma_max = end;
+	dev_info(dart->dev, "IOVA window %pad..%pad\n", &dart->dma_min,
+		 &dart->dma_max);
+	return 0;
+}
+
 static int apple_dart_s5l8960x_parse_config(struct apple_dart *dart)
 {
 	struct device_node *np = dart->dev->of_node;
@@ -1459,6 +1514,10 @@ static int apple_dart_probe(struct platform_device *pdev)
 		dart->four_level = dart->ias > 36;
 		break;
 	}
+
+	ret = apple_dart_parse_dma_range(dart);
+	if (ret)
+		goto err_clk_disable;
 
 	if (dart->num_streams > DART_MAX_STREAMS) {
 		dev_err(&pdev->dev, "Too many streams (%d > %d)\n",
