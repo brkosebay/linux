@@ -224,7 +224,11 @@ static int apple_pmgr_ps_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	ps->genpd.flags |= GENPD_FLAG_IRQ_SAFE;
+	/*
+	 * Keep a domain on over system sleep while a device in it is on the
+	 * wakeup path (e.g. a USB gadget kept connected in s2idle).
+	 */
+	ps->genpd.flags |= GENPD_FLAG_IRQ_SAFE | GENPD_FLAG_ACTIVE_WAKEUP;
 	ps->genpd.name = name;
 	ps->genpd.power_on = apple_pmgr_ps_power_on;
 	ps->genpd.power_off = apple_pmgr_ps_power_off;
