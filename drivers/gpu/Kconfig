@@ -14,7 +14,7 @@ config GPU_BUDDY_KUNIT_TEST
          KUnit tests for the GPU buddy allocator.
 
 config APPLE_G5P_DIAG
-	tristate "Apple A9/G5P offline firmware diagnostic"
+	bool "Apple A9/G5P staged firmware diagnostic"
 	depends on ARCH_APPLE && OF && PM
 	select FW_LOADER
 	select CRYPTO_LIB_SHA256

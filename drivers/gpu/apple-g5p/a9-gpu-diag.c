@@ -5,6 +5,8 @@
  * RE evidence: linux-a9/docs/gpu/agx-g5p-bringup.md (20H350 j71t).
  */
 #include <crypto/sha2.h>
+#include <clocksource/arm_arch_timer.h>
+#include <linux/vmalloc.h>
 #include <linux/capability.h>
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
@@ -30,7 +32,10 @@ static bool enable;
 module_param(enable, bool, 0400);
 MODULE_PARM_DESC(enable, "Register experimental GPU diagnostic (default false)");
 
+struct g5p_boot;
+
 struct g5p_diag {
+	struct g5p_boot *boot;
 	struct device *dev;
 	void __iomem *window[2];
 	void __iomem *rgx;
@@ -39,11 +44,12 @@ struct g5p_diag {
 	bool powered;
 	bool loaded;
 	struct g5p_ldr_image image;
-	dma_addr_t image_dma;
 	bool fender_ready;
 	bool id_checked;
 	int last_result;
 	u32 words_written;
+	u32 core_id, core_revision;
+	u32 last_sp_addr;
 };
 
 static int g5p_power(struct g5p_diag *g)
@@ -99,12 +105,17 @@ static int g5p_sp_wait(struct g5p_diag *g)
 	if (ret)
 		dev_err(g->dev, "slave port timeout CTRL1=%08x words=%u\n",
 			value, g->words_written);
+	if (ret)
+		dev_err(g->dev, "slave target=%08x\n", g->last_sp_addr);
 	return ret;
 }
 
 static int g5p_meta_read(struct g5p_diag *g, u32 addr, u32 *out)
 {
-	int ret = g5p_sp_wait(g);
+	int ret;
+
+	g->last_sp_addr = addr;
+	ret = g5p_sp_wait(g);
 
 	if (ret)
 		return ret;
@@ -117,9 +128,12 @@ static int g5p_meta_read(struct g5p_diag *g, u32 addr, u32 *out)
 	return 0;
 }
 
-static int __maybe_unused g5p_meta_write(struct g5p_diag *g, u32 addr, u32 value)
+static int g5p_meta_write(struct g5p_diag *g, u32 addr, u32 value)
 {
-	int ret = g5p_sp_wait(g);
+	int ret;
+
+	g->last_sp_addr = addr;
+	ret = g5p_sp_wait(g);
 
 	if (ret)
 		return ret;
@@ -156,8 +170,7 @@ static int g5p_firmware(struct g5p_diag *g, bool prepare)
 		goto out;
 	dev_info(g->dev, "firmware SHA256 and all 94 LDR records validated\n");
 	if (prepare && !g->loaded) {
-		g->image.data = dmam_alloc_coherent(g->dev, G5P_IMAGE_SIZE,
-						    &g->image_dma, GFP_KERNEL);
+		g->image.data = kvzalloc(G5P_IMAGE_SIZE, GFP_KERNEL);
 		if (!g->image.data) {
 			ret = -ENOMEM;
 			goto out;
@@ -167,14 +180,13 @@ static int g5p_firmware(struct g5p_diag *g, bool prepare)
 		if (!ret && g->image.config_count != G5P_CONFIG_WRITES)
 			ret = -EINVAL;
 		if (ret) {
-			dmam_free_coherent(g->dev, G5P_IMAGE_SIZE,
-					   g->image.data, g->image_dma);
+			kvfree(g->image.data);
 			memset(&g->image, 0, sizeof(g->image));
 			goto out;
 		}
 		g->loaded = true;
-		dev_info(g->dev, "LDR packed into %x DMA bytes at %pad; T1 PC=%08x SP=%08x\n",
-			 G5P_IMAGE_SIZE, &g->image_dma, g->image.t1_pc, g->image.t1_sp);
+		dev_info(g->dev, "LDR packed into %x CPU bytes; T1 PC=%08x SP=%08x\n",
+			 G5P_IMAGE_SIZE, g->image.t1_pc, g->image.t1_sp);
 		dev_info(g->dev, "not executable: GPU PTEs, boot config and shared init not installed\n");
 	}
 out:
@@ -213,11 +225,14 @@ static int g5p_read_id(struct g5p_diag *g)
 
 	if (!g->fender_ready)
 		return -EPERM;
+	g->id_checked = false;
 	for (i = 0; i < ARRAY_SIZE(offsets); i++) {
 		dev_info(g->dev, "R R0+%05x\n", offsets[i]);
 		words[i] = readl(g->rgx + offsets[i]);
 		dev_info(g->dev, "R0+%05x=%08x\n", offsets[i], words[i]);
 	}
+	g->core_revision = words[0];
+	g->core_id = words[1];
 	if ((!words[0] && !words[1]) || words[0] == ~0U || words[1] == ~0U)
 		return -ENODEV;
 	/* Match Apple readChipInfo at ...6ca644c before deeper META accesses. */
@@ -229,14 +244,26 @@ static int g5p_read_id(struct g5p_diag *g)
 	return 0;
 }
 
+#include "boot.inc"
+
 static ssize_t result_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct g5p_diag *g = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "last=%d powered=%u fender=%u id=%u loaded=%u words=%u\n",
-		READ_ONCE(g->last_result), READ_ONCE(g->powered),
-		READ_ONCE(g->fender_ready), READ_ONCE(g->id_checked),
-		READ_ONCE(g->loaded), READ_ONCE(g->words_written));
+	struct g5p_boot *b = READ_ONCE(g->boot);
+
+	int len;
+
+	len = sysfs_emit(buf, "last=%d powered=%u fender=%u id=%u loaded=%u words=%u ",
+			 READ_ONCE(g->last_result), READ_ONCE(g->powered),
+			 READ_ONCE(g->fender_ready), READ_ONCE(g->id_checked),
+			 READ_ONCE(g->loaded), READ_ONCE(g->words_written));
+	return len + sysfs_emit_at(buf, len,
+		"maps=%u armed=%u copied=%u released=%u alive=%u events=%u irqs=%d failed=%u\n",
+		b && READ_ONCE(b->maps_ready), b && READ_ONCE(b->armed),
+		b && READ_ONCE(b->copied), b && READ_ONCE(b->released),
+		b && READ_ONCE(b->alive), b ? READ_ONCE(b->events) : 0,
+		b ? atomic_read(&b->irqs) : 0, b && READ_ONCE(b->failed));
 }
 static DEVICE_ATTR_RO(result);
 
@@ -253,22 +280,14 @@ static ssize_t command_store(struct device *dev, struct device_attribute *attr,
 		ret = g5p_firmware(g, sysfs_streq(buf, "prepare"));
 		goto out;
 	}
-	if (!sysfs_streq(buf, "id") && !sysfs_streq(buf, "sample") &&
-	    !sysfs_streq(buf, "load") && !sysfs_streq(buf, "wake")) {
-		ret = -EINVAL;
-		goto out;
-	}
-	if (sysfs_streq(buf, "wake")) {
+	if (sysfs_streq(buf, "wake"))
 		ret = g5p_fender_wake(g);
-	} else if (sysfs_streq(buf, "id")) {
+	else if (sysfs_streq(buf, "id"))
 		ret = g5p_read_id(g);
-	} else if (sysfs_streq(buf, "sample")) {
+	else if (sysfs_streq(buf, "sample"))
 		ret = g->id_checked ? g5p_sample(g) : -EPERM;
-	} else {
-		/* External backing / reset sequence must be proven first. */
-		dev_err(dev, "load withheld: GPU PTEs and shared init not installed\n");
-		ret = -EOPNOTSUPP;
-	}
+	else
+		ret = g5p_boot_command(g, buf);
 out:
 	g->last_result = ret;
 	dev_info(dev, "command %.*s result=%d\n", (int)count, buf, ret);
@@ -313,6 +332,7 @@ static void g5p_remove(struct platform_device *pdev)
 	if (g->powered)
 		pm_runtime_put_sync(g->dev);
 	pm_runtime_disable(g->dev);
+	kvfree(g->image.data);
 }
 
 static const struct of_device_id g5p_match[] = {
