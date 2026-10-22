@@ -167,6 +167,24 @@
 #define H9P_NVMMU_SART_VA_BASE		0x0024
 #define H9P_NVMMU_SART_VA_END		0x0028
 #define H9P_NVMMU_SART_PA_BASE		0x002c
+/* Error registers, read by the iOS handler (AppleNVMeMMU, 0xfffffff005eea2fc) */
+#define H9P_NVMMU_ERR_INFO		0x0030	/* [29:23] tag */
+#define H9P_NVMMU_ERR_STATUS		0x0034	/* one bit per error type */
+#define H9P_NVMMU_ERR_PRP		0x0038
+#define H9P_NVMMU_ERR_ADDR_LO		0x003c
+#define H9P_NVMMU_ERR_CRYPTO		0x0040
+#define H9P_NVMMU_ERR_ADDR_HI		0x0044
+#define H9P_NVMMU_ERR_FETCH		0x0048
+
+/* S5L8960X DART registers, for the read-only host dump */
+#define H9P_DART_TCR			0x000c
+#define H9P_DART_ERROR			0x0010
+#define H9P_DART_ERROR_FLAG		BIT(31)
+#define H9P_DART_ERROR_ADDR		0x001c
+#define H9P_DART_DIAG			0x0020
+#define H9P_DART_REFLECTOR		0x0024
+#define H9P_DART_FETCH			0x0030
+#define H9P_DART_TTBR(i)		(0x0040 + (i) * 4)
 
 #define H9P_NVMMU_TCB_BYTES		0x80
 #define H9P_NVMMU_TCB_COUNT		128
@@ -223,6 +241,11 @@ struct apple_h9p_nvmmu {
 	dma_addr_t tcb_dma;
 	dma_addr_t tcb_table_dma;
 	dma_addr_t tcb_sgl_dma;
+	/*
+	 * Port 0's DART, mapped here only to read its status for the ANS
+	 * bring-up diagnostics. apple-dart owns it.
+	 */
+	void __iomem *dart;
 };
 
 struct apple_h9p_pcie {
@@ -639,13 +662,51 @@ static int apple_h9p_wait_gpio(struct gpio_desc *desc, int value,
 	return -ETIMEDOUT;
 }
 
+/*
+ * iOS panics on every NVMMU error ("nvme mmu fetch error ...") and never
+ * acks one, so there is no known way to clear it. Log everything once and
+ * mask the interrupt so it can't storm.
+ */
 static irqreturn_t apple_h9p_nvmmu_irq(int irq, void *data)
 {
 	struct apple_h9p_nvmmu *nvmmu = data;
 	struct apple_h9p_pcie *pcie = nvmmu->pcie;
+	void __iomem *b = nvmmu->base;
 
-	dev_err_ratelimited(pcie->dev, "storage-port NVMMU fault interrupt\n");
+	dev_err(pcie->dev,
+		"NVMMU fault: status %#x info %#x (tag %lu) prp %#x addr %#x:%08x crypto %#x fetch %#x; masking the NVMMU interrupt\n",
+		readl(b + H9P_NVMMU_ERR_STATUS), readl(b + H9P_NVMMU_ERR_INFO),
+		FIELD_GET(GENMASK(29, 23), readl(b + H9P_NVMMU_ERR_INFO)),
+		readl(b + H9P_NVMMU_ERR_PRP), readl(b + H9P_NVMMU_ERR_ADDR_HI),
+		readl(b + H9P_NVMMU_ERR_ADDR_LO), readl(b + H9P_NVMMU_ERR_CRYPTO),
+		readl(b + H9P_NVMMU_ERR_FETCH));
+	disable_irq_nosync(irq);
 	return IRQ_HANDLED;
+}
+
+static void apple_h9p_iounmap(void *addr)
+{
+	iounmap(addr);
+}
+
+/* Map port 0's DART (first iommu-map entry) for read-only diagnostics */
+static void apple_h9p_map_dart(struct apple_h9p_pcie *pcie)
+{
+	struct device_node *np;
+
+	np = of_parse_phandle(pcie->dev->of_node, "iommu-map", 1);
+	if (!np)
+		return;
+	if (of_device_is_compatible(np, "apple,s5l8960x-dart") &&
+	    of_device_is_available(np)) {
+		/* of_iomap: apple-dart already requested the region */
+		pcie->nvmmu.dart = of_iomap(np, 0);
+		if (pcie->nvmmu.dart &&
+		    devm_add_action_or_reset(pcie->dev, apple_h9p_iounmap,
+					     (void __force *)pcie->nvmmu.dart))
+			pcie->nvmmu.dart = NULL;
+	}
+	of_node_put(np);
 }
 
 /*
@@ -791,6 +852,8 @@ static int apple_h9p_setup_nvmmu(struct apple_h9p_pcie *pcie)
 		return irq;
 	}
 
+	apple_h9p_map_dart(pcie);
+
 	nvmmu->ready = true;
 	if (nvmmu->sart)
 		dev_info(dev, "NVMMU: ready, SART window %#x -> %pa size %#x, invalidate-fifo %u\n",
@@ -871,6 +934,99 @@ int apple_ans_link_up(struct device *dev)
 		  pcie->hw->linksts_up);
 }
 EXPORT_SYMBOL_GPL(apple_ans_link_up);
+
+/*
+ * SoC-side state of the endpoint's port, NVMMU and DART. None of these
+ * reads goes over the PCIe link, so they can't stall on a wedged
+ * endpoint; the ANS glue watches them around CC.EN instead of hammering
+ * the controller with non-posted CSTS reads.
+ */
+int apple_ans_host_state(struct device *dev, struct apple_ans_host_state *st)
+{
+	struct apple_h9p_pcie *pcie = apple_ans_host(dev);
+	void __iomem *pb;
+
+	memset(st, 0, sizeof(*st));
+	if (!pcie || apple_h9p_pcie_device_port(pcie, dev) != 0 ||
+	    !(pcie->enabled_ports & BIT(0)))
+		return -ENODEV;
+
+	pb = pcie->base_port[0];
+	st->link_up = pcie->hw->linksts ?
+		!!(readl(pb + pcie->hw->linksts) & pcie->hw->linksts_up) : 1;
+	if (pcie->hw->linksts == S8003_PORT_LINKSTS)
+		st->ltssm = FIELD_GET(S8003_PORT_LINKCDMSTS_LTSSM,
+				      readl(pb + S8003_PORT_LINKCDMSTS));
+	st->port_irq = readl(pb + H9P_PORT_IRQSTAT);
+	if (pcie->nvmmu.ready)
+		st->nvmmu_err = readl(pcie->nvmmu.base + H9P_NVMMU_ERR_STATUS);
+	if (pcie->nvmmu.dart) {
+		st->dart_err = readl(pcie->nvmmu.dart + H9P_DART_ERROR);
+		st->dart_addr = readl(pcie->nvmmu.dart + H9P_DART_ERROR_ADDR);
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(apple_ans_host_state);
+
+void apple_ans_host_dump(struct device *dev, const char *when)
+{
+	struct apple_h9p_pcie *pcie = apple_ans_host(dev);
+	void __iomem *rc, *pb, *nv, *da;
+
+	if (!pcie || apple_h9p_pcie_device_port(pcie, dev) != 0 ||
+	    !(pcie->enabled_ports & BIT(0)))
+		return;
+	/* The rc/port offsets below are the S8003 ones */
+	if (pcie->hw->linksts != S8003_PORT_LINKSTS)
+		return;
+
+	rc = pcie->base_rc;
+	pb = pcie->base_port[0];
+	dev_info(dev,
+		 "host %s: rc ctl %#x pwr %#x refclk %#x rdy %#x stat %#x; port linksts %#x cdm %#x irq %#x/%#x msi %#x/%#x en %#x pmgr %#x\n",
+		 when, readl(rc + S8003_RC_PORT_CTL(0)),
+		 readl(rc + S8003_RC_PORT_PWR(0)),
+		 readl(rc + S8003_RC_PORT_REFCLK(0)),
+		 readl(rc + S8003_RC_PORT_READY(0)), readl(rc + S8003_RC_STAT),
+		 readl(pb + S8003_PORT_LINKSTS),
+		 readl(pb + S8003_PORT_LINKCDMSTS),
+		 readl(pb + H9P_PORT_IRQSTAT), readl(pb + H9P_PORT_IRQMASK),
+		 readl(pb + S8003_PORT_MSICTL),
+		 readl(pb + H9P_PORT_MSIVECBASE), readl(pb + H9P_PORT_ENABLE),
+		 readl(pb + S8003_PORT_LINKPMGRSTS));
+
+	nv = pcie->nvmmu.base;
+	if (pcie->nvmmu.ready)
+		dev_info(dev,
+			 "host %s: nvmmu ctl %#x tcb %#x:%08x scratch %#x:%08x sart %#x %#x..%#x pa %#x; err %#x %#x %#x %#x:%08x %#x %#x\n",
+			 when, readl(nv + H9P_NVMMU_TCB_CTRL),
+			 readl(nv + H9P_NVMMU_TCB_BASE_HI),
+			 readl(nv + H9P_NVMMU_TCB_BASE_LO),
+			 readl(nv + H9P_NVMMU_TCB_TABLE_HI),
+			 readl(nv + H9P_NVMMU_TCB_TABLE_LO),
+			 readl(nv + H9P_NVMMU_SART_CTRL),
+			 readl(nv + H9P_NVMMU_SART_VA_BASE),
+			 readl(nv + H9P_NVMMU_SART_VA_END),
+			 readl(nv + H9P_NVMMU_SART_PA_BASE),
+			 readl(nv + H9P_NVMMU_ERR_STATUS),
+			 readl(nv + H9P_NVMMU_ERR_INFO),
+			 readl(nv + H9P_NVMMU_ERR_PRP),
+			 readl(nv + H9P_NVMMU_ERR_ADDR_HI),
+			 readl(nv + H9P_NVMMU_ERR_ADDR_LO),
+			 readl(nv + H9P_NVMMU_ERR_CRYPTO),
+			 readl(nv + H9P_NVMMU_ERR_FETCH));
+
+	da = pcie->nvmmu.dart;
+	if (da)
+		dev_info(dev,
+			 "host %s: dart tcr %#x err %#x addr %#x diag %#x reflector %#x fetch %#x ttbr %#x %#x %#x %#x\n",
+			 when, readl(da + H9P_DART_TCR), readl(da + H9P_DART_ERROR),
+			 readl(da + H9P_DART_ERROR_ADDR), readl(da + H9P_DART_DIAG),
+			 readl(da + H9P_DART_REFLECTOR), readl(da + H9P_DART_FETCH),
+			 readl(da + H9P_DART_TTBR(0)), readl(da + H9P_DART_TTBR(1)),
+			 readl(da + H9P_DART_TTBR(2)), readl(da + H9P_DART_TTBR(3)));
+}
+EXPORT_SYMBOL_GPL(apple_ans_host_dump);
 
 int apple_ans_nvmmu_map(struct device *dev, unsigned int tag,
 			const u64 *pages, unsigned int npages,
