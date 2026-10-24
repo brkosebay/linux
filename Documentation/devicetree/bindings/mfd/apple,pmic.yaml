@@ -54,6 +54,18 @@ properties:
   "#size-cells":
     const: 1
 
+  interrupts:
+    description: D2365 active-low event output to the AP GPIO controller.
+    maxItems: 1
+
+  interrupt-controller: true
+
+  "#interrupt-cells":
+    description: D2365 event number within the PMIC interrupt domain.
+    const: 1
+
+  wakeup-source: true
+
   gpio:
     $ref: /schemas/gpio/apple,d2365-pmic-gpio.yaml
 
