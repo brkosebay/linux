@@ -70,6 +70,15 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 
+		/* D2365 event line: ADT GPIO 0x4c, not CPU PMU AIC 76. */
+		interrupt-parent = <&pinctrl_ap>;
+		interrupts = <76 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-source;
+
+		/* Child event specifiers need a PMIC irqchip before use. */
+		interrupt-controller;
+		#interrupt-cells = <1>;
+
 		rtc@500 {
 			compatible = "apple,angel-pmic-rtc", "apple,antigua-pmic-rtc";
 			reg = <0x500 0x10>;
