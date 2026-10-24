@@ -37,6 +37,18 @@ properties:
   power-supplies:
     maxItems: 1
 
+  apple,usb-input-limit-max-microamp:
+    description: Board input ceiling, from the ADT usb-input-limit-max value.
+    enum: [500000, 1000000, 2100000, 2400000]
+    default: 500000
+
+  apple,owner-input-limit-microamp:
+    description: |
+      Owner-authorized input ceiling for this development unit's USB host.
+      Requires an enumerated host or a detected brick and valid CBAT codes;
+      the board ceiling still applies. Omission leaves source-based policy.
+    enum: [500000, 1000000, 2100000, 2400000]
+
 required:
   - compatible
   - reg
