@@ -226,7 +226,7 @@ static int apple_tristar_budget(const struct usb_gadget_current_budget *budget,
 	if (budget->connected) {
 		*type = POWER_SUPPLY_USB_TYPE_SDP;
 		if (budget->suspended)
-			return 0;
+			return 500000; /* Link PM does not remove the enumerated source. */
 		if (budget->host_grant)
 			return min(budget->current_ma, 2400U) * 1000;
 		if (budget->configured)
