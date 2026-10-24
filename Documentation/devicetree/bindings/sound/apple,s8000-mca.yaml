@@ -38,10 +38,16 @@ properties:
     maxItems: 1
 
   dmas:
-    maxItems: 1
+    minItems: 1
+    items:
+      - description: SmartIO transmit (playback) endpoint
+      - description: SmartIO receive (capture) endpoint
 
   dma-names:
-    const: tx
+    minItems: 1
+    items:
+      - const: tx
+      - const: rx
 
   '#sound-dai-cells':
     const: 0
@@ -80,8 +86,8 @@ properties:
       - description: shim FIFO size, bytes
       - description: shim trigger level, bytes
     description:
-      The SmartIO shim words of this MCA's DMA endpoint (Apple ADT
-      dma-channels).
+      The SmartIO shim words of this MCA's DMA endpoints (Apple ADT
+      dma-channels; the transmit and receive entries carry the same words).
 
   apple,pio-fifo-offset:
     $ref: /schemas/types.yaml#/definitions/uint32
