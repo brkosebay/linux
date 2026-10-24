@@ -842,6 +842,9 @@ static int n1_power_on(struct apple_n1 *n1)
 {
 	int ret;
 
+	dev_info(&n1->spi->dev, "N1 power/reset begin (reset asserted, LDO off)\n");
+	/* Ensure a real reset interval even after a retained/panic entry. */
+	usleep_range(5000, 6000);
 	ret = regulator_enable(n1->vdd);
 	if (ret)
 		return ret;
@@ -888,6 +891,7 @@ static int n1_probe(struct spi_device *spi)
 	unsigned int stage = READ_ONCE(boot_stage);
 	int ret, count, i;
 
+	dev_info(dev, "N1 probe begin stage=%u\n", stage);
 	if (stage < 1 || stage > 3)
 		return -EINVAL;
 	n1 = devm_kzalloc(dev, sizeof(*n1), GFP_KERNEL);
@@ -934,6 +938,7 @@ static int n1_probe(struct spi_device *spi)
 	n1->sync_off = pinctrl_lookup_state(n1->pins, "sync-off");
 	if (IS_ERR(n1->sync_off))
 		return dev_err_probe(dev, PTR_ERR(n1->sync_off), "sync-off state\n");
+	dev_info(dev, "N1 resources ready; loading firmware/calibration\n");
 	if (stage >= 2) {
 		ret = device_property_read_string(dev, "firmware-name", &name);
 		if (ret)
@@ -987,6 +992,7 @@ static int n1_probe(struct spi_device *spi)
 	ret = n1_power_on(n1);
 	if (ret)
 		goto release_firmware;
+	dev_info(dev, "N1 power/reset complete; HBPP begin\n");
 	ret = n1_check_hbpp(n1);
 	if (ret)
 		goto power_off;
@@ -1000,9 +1006,11 @@ static int n1_probe(struct spi_device *spi)
 	dev_info(dev, "HBPP detected; N1 controller %#x (stage %u)\n", version, stage);
 	if (stage == 1)
 		goto power_off;
+	dev_info(dev, "N1 calibration upload begin\n");
 	ret = n1_upload_calibration(n1, cal_data);
 	if (ret)
 		goto power_off;
+	dev_info(dev, "N1 firmware upload begin\n");
 	memcpy(n1->tx, fw->data, fw->size);
 	ret = n1_send_blob(n1, fw->size);
 	if (ret)
@@ -1015,9 +1023,11 @@ static int n1_probe(struct spi_device *spi)
 	ret = n1_calibrate(n1, version);
 	if (ret)
 		goto power_off;
+	dev_info(dev, "N1 execute begin\n");
 	ret = n1_execute(n1);
 	if (ret)
 		goto power_off;
+	dev_info(dev, "N1 discovery begin\n");
 	ret = n1_discover(n1);
 	if (ret || stage == 2)
 		goto power_off;
@@ -1089,6 +1099,8 @@ static void n1_remove(struct spi_device *spi)
 {
 	struct apple_n1 *n1 = spi_get_drvdata(spi);
 
+	dev_info(&spi->dev, "N1 stop begin irq=%u powered=%u\n",
+		 n1->irq_requested, n1->powered);
 	mutex_lock(&n1->lock);
 	n1->suspended = true;
 	if (n1->irq_requested)
