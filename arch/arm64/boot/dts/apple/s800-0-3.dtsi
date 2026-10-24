@@ -209,9 +209,9 @@
 			power-domains = <&ps_aic>;
 		};
 
-		dwi_bl: backlight@20e200080 {
+		dwi_bl: backlight@20e200000 {
 			compatible = "apple,s8000-dwi-bl", "apple,dwi-bl";
-			reg = <0x2 0x0e200080 0x0 0x8>;
+			reg = <0x2 0x0e200000 0x0 0x4000>;
 			power-domains = <&ps_dwi>;
 			status = "disabled";
 		};
