@@ -10,8 +10,11 @@ maintainers:
   - linux-a9 <linux-a9@localhost>
 
 description:
-  Apple-specific Cirrus Logic codec with integrated speaker drivers, used on
-  the A9 iPad 5. Controlled over SPI with a 5-byte paged register protocol.
+  Apple-specific Cirrus Logic codec with integrated speaker drivers, a
+  headphone driver and digital microphone inputs, used on the A9 iPad 5.
+  Controlled over SPI with a 5-byte paged register protocol. The codec DAI
+  has outputs SPKOUT and HPOUT and DMIC inputs DMIC1A and DMIC1B for
+  machine routing.
 
 allOf:
   - $ref: dai-common.yaml#
@@ -33,6 +36,13 @@ properties:
   mute-gpios:
     maxItems: 1
     description: Speaker mute line, asserted while the speakers are muted.
+
+  hs-switch-gpios:
+    maxItems: 2
+    description:
+      The two control lines of the external headset switch (Apple
+      function-ext_sw1, function-ext_sw2). Their direction is not known;
+      the driver only reads them.
 
   apple,max-speaker-gain-db-q8:
     $ref: /schemas/types.yaml#/definitions/int32
@@ -68,6 +78,8 @@ examples:
         clocks = <&mca0>;
         clock-names = "mclk";
         mute-gpios = <&pinctrl_ap 64 GPIO_ACTIVE_LOW>;
+        hs-switch-gpios = <&pinctrl_ap 68 GPIO_ACTIVE_HIGH>,
+                          <&pinctrl_ap 66 GPIO_ACTIVE_HIGH>;
         #sound-dai-cells = <0>;
       };
     };
