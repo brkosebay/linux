@@ -94,6 +94,8 @@
 		reg = <0x180>, <0xa00>;
 		reg-names = "status", "control";
 		power-supplies = <&periph_tristar>;
+		apple,usb-input-limit-max-microamp = <2400000>;
+		apple,owner-input-limit-microamp = <2400000>;
 	};
 };
 
