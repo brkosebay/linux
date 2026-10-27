@@ -76,6 +76,21 @@
 			#performance-domain-cells = <0>;
 		};
 
+		/*
+		 * Imagination PowerVR MSVDX ("VXD") hardware video decoder,
+		 * ADT node vxd@7F00000 (vxd-version 7, level 4.2 H.264).
+		 * No DART: the core carries its own two-level GART, which
+		 * the apple-vxd driver programs.  The DEVA firmware is not
+		 * in the DT (the iOS kext embeds it); Linux loads it from
+		 * /lib/firmware/apple/vxd-deva.bin.
+		 */
+		vxd@207f00000 {
+			compatible = "apple,s8000-vxd";
+			reg = <0x2 0x07f00000 0x0 0x100000>;
+			interrupts = <AIC_IRQ 157 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&ps_vdec>;
+		};
+
 		serial0: serial@20a0c0000 {
 			compatible = "apple,s5l-uart";
 			reg = <0x2 0x0a0c0000 0x0 0x4000>;
@@ -209,9 +224,9 @@
 			power-domains = <&ps_aic>;
 		};
 
-		dwi_bl: backlight@20e200080 {
+		dwi_bl: backlight@20e200000 {
 			compatible = "apple,s8000-dwi-bl", "apple,dwi-bl";
-			reg = <0x2 0x0e200080 0x0 0x8>;
+			reg = <0x2 0x0e200000 0x0 0x4000>;
 			power-domains = <&ps_dwi>;
 			status = "disabled";
 		};
@@ -289,6 +304,40 @@
 			clocks = <&clkref>;
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 4 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		/*
+		 * dma-range, error-reflector, fetch-config and diag-config are
+		 * the j71t ADT dart-apcie0/1 vm-offset/vm-size, error-reflector,
+		 * fetch-config and diag-config, which iOS programs at every
+		 * DART init.
+		 */
+		pcie0_dart0: iommu@601008000 {
+			compatible = "apple,s8000-dart", "apple,s5l8960x-dart";
+			reg = <0x6 0x01008000 0x0 0x4000>;
+			#iommu-cells = <1>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 245 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&ps_pcie_link0>;
+			apple,dma-range = <0x0 0x80000000 0x0 0x3c000000>;
+			apple,error-reflector = /bits/ 64 <0x20fffc000>;
+			apple,fetch-config = <0x000e0303>;
+			apple,diag-config = <0x00000100>;
+			status = "disabled";
+		};
+
+		pcie0_dart1: iommu@602008000 {
+			compatible = "apple,s8000-dart", "apple,s5l8960x-dart";
+			reg = <0x6 0x02008000 0x0 0x4000>;
+			#iommu-cells = <1>;
+			interrupt-parent = <&aic>;
+			interrupts = <AIC_IRQ 248 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&ps_pcie_link1>;
+			apple,dma-range = <0x0 0x80000000 0x0 0x3ffff000>;
+			apple,error-reflector = /bits/ 64 <0x20fffc000>;
+			apple,fetch-config = <0x000e0303>;
+			apple,diag-config = <0x00000100>;
+			status = "disabled";
 		};
 	};
 

@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * J71t audio: CS42L81 on SPI1 (control) + MCA0 (data). Built-in speakers,
+ * 3.5 mm headphones and the two built-in DMICs (capture over MCA0 RX).
+ * Values: Apple's J71t ADT and iOS 16.7.10's AppleCS42L81Audio/AppleAE2MCA
+ * (omarchy-ipad5 docs/audio/playback-path.md, ds-capture-and-jack.md). Items
+ * marked "inferred" are unverified on hardware.
+ */
+
+/ {
+	/* Live iOS arm-io clock-frequencies[0x12e - 0x100] (spi1 clock-ids) */
+	spi1_nclk: clock-spi1 {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <61538461>;
+	};
+
+	sound: sound {
+		compatible = "simple-audio-card";
+		/* name kept from the speaker-only card: ALSA card id iPad5Speakers */
+		simple-audio-card,name = "iPad5 Speakers";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&j71t_codec_dai>;
+		simple-audio-card,frame-master = <&j71t_codec_dai>;
+		simple-audio-card,widgets = "Speaker", "Speakers",
+					    "Headphone", "Headphones",
+					    "Microphone", "Internal Mic";
+		/* ADT dmic1a-intmic "cimi", dmic1b-intmic "cims" */
+		simple-audio-card,routing = "Speakers", "SPKOUT",
+					    "Headphones", "HPOUT",
+					    "DMIC1A", "Internal Mic",
+					    "DMIC1B", "Internal Mic";
+		/*
+		 * The codec's "Headphone Jack" switches HPOUT/SPKOUT; these add
+		 * user switches on top (ALSA "Speakers/Headphones Switch").
+		 */
+		simple-audio-card,pin-switches = "Speakers", "Headphones";
+
+		simple-audio-card,cpu {
+			sound-dai = <&mca0>;
+		};
+
+		j71t_codec_dai: simple-audio-card,codec {
+			sound-dai = <&cs42l81>;
+		};
+	};
+};
+
+/*
+ * SmartIO coprocessor domain: PMGR device "SIO" is index 12 in the ADT, next
+ * to SIO_BUSIF (10, 0x80150) and SIO_P (11, 0x80158) -> 0x80160 (inferred).
+ */
+&pmgr {
+	ps_sio: power-controller@80160 {
+		compatible = "apple,s8000-pmgr-pwrstate", "apple,pmgr-pwrstate";
+		reg = <0x80160 4>;
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		label = "sio";
+		power-domains = <&ps_sio_p>;
+	};
+};
+
+&{/soc} {
+	/* ADT /arm-io/sio: iop,s8000, iop-version 1 (AppleA7IOPV1) */
+	sio: dma-controller@20ae00000 {
+		compatible = "apple,s8000-sio";
+		reg = <0x2 0x0ae00000 0x0 0x10000>,
+		      <0x2 0x0a000000 0x0 0x2000>;
+		reg-names = "a7iop", "shim";
+		interrupt-parent = <&aic>;
+		/* ADT order; the driver takes index 2 (187) as the RX mailbox */
+		interrupts = <AIC_IRQ 185 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 184 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 187 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 186 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_sio>;
+		resets = <&ps_sio>;
+		firmware-name = "apple/s8000-smartio.bin";
+		dma-channels = <64>;
+		#dma-cells = <1>;
+	};
+
+	i2s_switch: syscon@20a003000 {
+		compatible = "apple,s8000-i2s-switch", "syscon";
+		reg = <0x2 0x0a003000 0x0 0x1000>;
+	};
+
+	mca0: mca@20a0a0000 {
+		compatible = "apple,s8000-mca";
+		reg = <0x2 0x0a0a0000 0x0 0x4000>,
+		      <0x2 0x0a002000 0x0 0x4>;
+		reg-names = "mca", "mclk";
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 201 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_mca0>;
+		#sound-dai-cells = <0>;
+		#clock-cells = <0>;
+		clock-output-names = "mca0-mclk";
+		/* nclk (24 MHz fixed, inferred) / 2 = 12 MHz, output enabled */
+		apple,mclk-control = <0x58>;
+		apple,mclk-frequency = <12000000>;
+		apple,i2s-switch = <&i2s_switch>;
+		/*
+		 * Byte offset, value. Codec is clock master on pin0 (inferred):
+		 * pin0 data from aud0, aud0 clocks+data from pin0, pin0 drives
+		 * data only.
+		 */
+		apple,i2s-switch-route = <0x00 0x00000018>,
+					 <0x14 0x00080808>,
+					 <0x3c 0x00000010>;
+		/*
+		 * SmartIO MCA0 TX/RX, ADT dma-channels: 0x28 and 0x29, both
+		 * {0x21|0x22, 0, 0x300, 0x180}.
+		 */
+		dmas = <&sio 0x28>, <&sio 0x29>;
+		dma-names = "tx", "rx";
+		apple,sio-dma-config = <0x21 0x22 0 0x300 0x180>;
+	};
+
+	j71t_spi1: spi@20a084000 {
+		/* driver: spi-apple-s8000 (touch workstream) */
+		compatible = "apple,s8000-spi";
+		reg = <0x2 0x0a084000 0x0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 189 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&spi1_nclk>;
+		power-domains = <&ps_spi1>;
+		/* ADT function-spi_cs0 = GPIO(0x10, 0x10001) */
+		cs-gpios = <&pinctrl_ap 16 GPIO_ACTIVE_LOW>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cs42l81: audio-codec@0 {
+			compatible = "cirrus,cs42l81";
+			reg = <0>;
+			/* ADT gives no speed; iOS framing is mode 0 (inferred) */
+			spi-max-frequency = <1000000>;
+			clocks = <&mca0>;
+			clock-names = "mclk";
+			/* function-spkr_mute = GPIO(0x40, 0x10001): active low (inferred) */
+			mute-gpios = <&pinctrl_ap 64 GPIO_ACTIVE_LOW>;
+			/* spkr-gain-db = -3.0 dB */
+			apple,max-speaker-gain-db-q8 = <(-768)>;
+			apple,speaker-mode = <2>;
+			/*
+			 * ADT function-ext_sw1 = GPIO(0x44, 0x101), ext_sw2 =
+			 * GPIO(0x42, 0x101): headset switch, direction unknown.
+			 * The driver only reads them (GPIOD_ASIS).
+			 */
+			hs-switch-gpios = <&pinctrl_ap 68 GPIO_ACTIVE_HIGH>,
+					  <&pinctrl_ap 66 GPIO_ACTIVE_HIGH>;
+			/*
+			 * No interrupts yet: ADT has <0x36 0x1> (AP GPIO 54),
+			 * but iOS detects the jack with a timer; the driver
+			 * polls (jack_poll_ms).
+			 */
+			#sound-dai-cells = <0>;
+		};
+	};
+};

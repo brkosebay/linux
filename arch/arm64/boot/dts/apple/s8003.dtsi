@@ -9,6 +9,10 @@
 
 #include "s800-0-3.dtsi"
 
+#ifdef APPLE_J71T_BOOT_DISPLAY
+#include "s8003-j71t-display.dtsi"
+#endif
+
 / {
 	twister_opp: opp-table {
 		compatible = "operating-points-v2";
@@ -48,15 +52,1496 @@
 			opp-level = <7>;
 			clock-latency-ns = <38000>;
 		};
-#if 0
-		/* Not available until CPU deep sleep is implemented */
+/* Opt-in stock boost; hardware load restriction is preserved. */
 		opp08 {
-			opp-hz = /bits/ 64 <1844000000>;
-			opp-level = <8>;
+			opp-hz = /bits/ 64 <1848000000>;
+			opp-level = <15>;
 			clock-latency-ns = <38000>;
 			turbo-mode;
 		};
-#endif
+		/* Guarded experimental slot; inaccessible until explicitly configured. */
+		opp09 {
+			opp-hz = /bits/ 64 <1896000000>;
+			opp-level = <9>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+
+		/* Guarded experimental slot; inaccessible until explicitly configured. */
+		opp10 {
+			opp-hz = /bits/ 64 <1944000000>;
+			opp-level = <10>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+
+		/* Guarded experimental slot; inaccessible until explicitly configured. */
+		opp11 {
+			opp-hz = /bits/ 64 <1992000000>;
+			opp-level = <11>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+
+		/* Guarded experimental slot; inaccessible until explicitly configured. */
+		opp12 {
+			opp-hz = /bits/ 64 <2040000000>;
+			opp-level = <12>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+
+		/* Guarded experimental slot; inaccessible until explicitly configured. */
+		opp13 {
+			opp-hz = /bits/ 64 <2088000000>;
+			opp-level = <13>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+
+		/* Guarded experimental slot; inaccessible until explicitly configured. */
+		opp14 {
+			opp-hz = /bits/ 64 <2160000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+
+		/* Round-6 shared-slot OPPs: begin */
+		opp-r6-2208000 {
+			opp-hz = /bits/ 64 <2208000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2256000 {
+			opp-hz = /bits/ 64 <2256000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2304000 {
+			opp-hz = /bits/ 64 <2304000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2352000 {
+			opp-hz = /bits/ 64 <2352000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2400000 {
+			opp-hz = /bits/ 64 <2400000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2448000 {
+			opp-hz = /bits/ 64 <2448000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2496000 {
+			opp-hz = /bits/ 64 <2496000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2544000 {
+			opp-hz = /bits/ 64 <2544000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2592000 {
+			opp-hz = /bits/ 64 <2592000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2640000 {
+			opp-hz = /bits/ 64 <2640000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2688000 {
+			opp-hz = /bits/ 64 <2688000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2736000 {
+			opp-hz = /bits/ 64 <2736000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2784000 {
+			opp-hz = /bits/ 64 <2784000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2832000 {
+			opp-hz = /bits/ 64 <2832000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2880000 {
+			opp-hz = /bits/ 64 <2880000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2928000 {
+			opp-hz = /bits/ 64 <2928000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-2976000 {
+			opp-hz = /bits/ 64 <2976000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3024000 {
+			opp-hz = /bits/ 64 <3024000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3072000 {
+			opp-hz = /bits/ 64 <3072000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3120000 {
+			opp-hz = /bits/ 64 <3120000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3168000 {
+			opp-hz = /bits/ 64 <3168000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3216000 {
+			opp-hz = /bits/ 64 <3216000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3264000 {
+			opp-hz = /bits/ 64 <3264000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3312000 {
+			opp-hz = /bits/ 64 <3312000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3360000 {
+			opp-hz = /bits/ 64 <3360000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3408000 {
+			opp-hz = /bits/ 64 <3408000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3456000 {
+			opp-hz = /bits/ 64 <3456000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3504000 {
+			opp-hz = /bits/ 64 <3504000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3552000 {
+			opp-hz = /bits/ 64 <3552000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3600000 {
+			opp-hz = /bits/ 64 <3600000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3648000 {
+			opp-hz = /bits/ 64 <3648000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3696000 {
+			opp-hz = /bits/ 64 <3696000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3744000 {
+			opp-hz = /bits/ 64 <3744000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3792000 {
+			opp-hz = /bits/ 64 <3792000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3840000 {
+			opp-hz = /bits/ 64 <3840000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3888000 {
+			opp-hz = /bits/ 64 <3888000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3936000 {
+			opp-hz = /bits/ 64 <3936000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-3984000 {
+			opp-hz = /bits/ 64 <3984000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4032000 {
+			opp-hz = /bits/ 64 <4032000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4080000 {
+			opp-hz = /bits/ 64 <4080000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4128000 {
+			opp-hz = /bits/ 64 <4128000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4176000 {
+			opp-hz = /bits/ 64 <4176000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4224000 {
+			opp-hz = /bits/ 64 <4224000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4272000 {
+			opp-hz = /bits/ 64 <4272000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4320000 {
+			opp-hz = /bits/ 64 <4320000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4368000 {
+			opp-hz = /bits/ 64 <4368000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4416000 {
+			opp-hz = /bits/ 64 <4416000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4464000 {
+			opp-hz = /bits/ 64 <4464000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4512000 {
+			opp-hz = /bits/ 64 <4512000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4560000 {
+			opp-hz = /bits/ 64 <4560000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4608000 {
+			opp-hz = /bits/ 64 <4608000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4656000 {
+			opp-hz = /bits/ 64 <4656000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4704000 {
+			opp-hz = /bits/ 64 <4704000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4752000 {
+			opp-hz = /bits/ 64 <4752000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4800000 {
+			opp-hz = /bits/ 64 <4800000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4848000 {
+			opp-hz = /bits/ 64 <4848000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4896000 {
+			opp-hz = /bits/ 64 <4896000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4944000 {
+			opp-hz = /bits/ 64 <4944000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-4992000 {
+			opp-hz = /bits/ 64 <4992000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5040000 {
+			opp-hz = /bits/ 64 <5040000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5088000 {
+			opp-hz = /bits/ 64 <5088000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5136000 {
+			opp-hz = /bits/ 64 <5136000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5184000 {
+			opp-hz = /bits/ 64 <5184000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5232000 {
+			opp-hz = /bits/ 64 <5232000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5280000 {
+			opp-hz = /bits/ 64 <5280000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5328000 {
+			opp-hz = /bits/ 64 <5328000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5376000 {
+			opp-hz = /bits/ 64 <5376000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5424000 {
+			opp-hz = /bits/ 64 <5424000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5472000 {
+			opp-hz = /bits/ 64 <5472000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5520000 {
+			opp-hz = /bits/ 64 <5520000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5568000 {
+			opp-hz = /bits/ 64 <5568000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5616000 {
+			opp-hz = /bits/ 64 <5616000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5664000 {
+			opp-hz = /bits/ 64 <5664000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5712000 {
+			opp-hz = /bits/ 64 <5712000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5760000 {
+			opp-hz = /bits/ 64 <5760000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5808000 {
+			opp-hz = /bits/ 64 <5808000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5856000 {
+			opp-hz = /bits/ 64 <5856000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5904000 {
+			opp-hz = /bits/ 64 <5904000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-5952000 {
+			opp-hz = /bits/ 64 <5952000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6000000 {
+			opp-hz = /bits/ 64 <6000000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6048000 {
+			opp-hz = /bits/ 64 <6048000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6096000 {
+			opp-hz = /bits/ 64 <6096000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6144000 {
+			opp-hz = /bits/ 64 <6144000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6192000 {
+			opp-hz = /bits/ 64 <6192000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6240000 {
+			opp-hz = /bits/ 64 <6240000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6288000 {
+			opp-hz = /bits/ 64 <6288000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6336000 {
+			opp-hz = /bits/ 64 <6336000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6384000 {
+			opp-hz = /bits/ 64 <6384000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6432000 {
+			opp-hz = /bits/ 64 <6432000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6480000 {
+			opp-hz = /bits/ 64 <6480000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6528000 {
+			opp-hz = /bits/ 64 <6528000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6576000 {
+			opp-hz = /bits/ 64 <6576000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6624000 {
+			opp-hz = /bits/ 64 <6624000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6672000 {
+			opp-hz = /bits/ 64 <6672000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6720000 {
+			opp-hz = /bits/ 64 <6720000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6768000 {
+			opp-hz = /bits/ 64 <6768000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6816000 {
+			opp-hz = /bits/ 64 <6816000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6864000 {
+			opp-hz = /bits/ 64 <6864000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6912000 {
+			opp-hz = /bits/ 64 <6912000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-6960000 {
+			opp-hz = /bits/ 64 <6960000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7008000 {
+			opp-hz = /bits/ 64 <7008000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7056000 {
+			opp-hz = /bits/ 64 <7056000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7104000 {
+			opp-hz = /bits/ 64 <7104000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7152000 {
+			opp-hz = /bits/ 64 <7152000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7200000 {
+			opp-hz = /bits/ 64 <7200000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7248000 {
+			opp-hz = /bits/ 64 <7248000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7296000 {
+			opp-hz = /bits/ 64 <7296000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7344000 {
+			opp-hz = /bits/ 64 <7344000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7392000 {
+			opp-hz = /bits/ 64 <7392000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7440000 {
+			opp-hz = /bits/ 64 <7440000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7488000 {
+			opp-hz = /bits/ 64 <7488000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7536000 {
+			opp-hz = /bits/ 64 <7536000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7584000 {
+			opp-hz = /bits/ 64 <7584000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7632000 {
+			opp-hz = /bits/ 64 <7632000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7680000 {
+			opp-hz = /bits/ 64 <7680000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7728000 {
+			opp-hz = /bits/ 64 <7728000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7776000 {
+			opp-hz = /bits/ 64 <7776000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7824000 {
+			opp-hz = /bits/ 64 <7824000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7872000 {
+			opp-hz = /bits/ 64 <7872000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7920000 {
+			opp-hz = /bits/ 64 <7920000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-7968000 {
+			opp-hz = /bits/ 64 <7968000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8016000 {
+			opp-hz = /bits/ 64 <8016000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8064000 {
+			opp-hz = /bits/ 64 <8064000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8112000 {
+			opp-hz = /bits/ 64 <8112000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8160000 {
+			opp-hz = /bits/ 64 <8160000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8208000 {
+			opp-hz = /bits/ 64 <8208000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8256000 {
+			opp-hz = /bits/ 64 <8256000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8304000 {
+			opp-hz = /bits/ 64 <8304000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8352000 {
+			opp-hz = /bits/ 64 <8352000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8400000 {
+			opp-hz = /bits/ 64 <8400000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8448000 {
+			opp-hz = /bits/ 64 <8448000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8496000 {
+			opp-hz = /bits/ 64 <8496000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8544000 {
+			opp-hz = /bits/ 64 <8544000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8592000 {
+			opp-hz = /bits/ 64 <8592000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8640000 {
+			opp-hz = /bits/ 64 <8640000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8688000 {
+			opp-hz = /bits/ 64 <8688000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8736000 {
+			opp-hz = /bits/ 64 <8736000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8784000 {
+			opp-hz = /bits/ 64 <8784000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8832000 {
+			opp-hz = /bits/ 64 <8832000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8880000 {
+			opp-hz = /bits/ 64 <8880000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8928000 {
+			opp-hz = /bits/ 64 <8928000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-8976000 {
+			opp-hz = /bits/ 64 <8976000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9024000 {
+			opp-hz = /bits/ 64 <9024000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9072000 {
+			opp-hz = /bits/ 64 <9072000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9120000 {
+			opp-hz = /bits/ 64 <9120000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9168000 {
+			opp-hz = /bits/ 64 <9168000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9216000 {
+			opp-hz = /bits/ 64 <9216000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9264000 {
+			opp-hz = /bits/ 64 <9264000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9312000 {
+			opp-hz = /bits/ 64 <9312000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9360000 {
+			opp-hz = /bits/ 64 <9360000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9408000 {
+			opp-hz = /bits/ 64 <9408000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9456000 {
+			opp-hz = /bits/ 64 <9456000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9504000 {
+			opp-hz = /bits/ 64 <9504000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9552000 {
+			opp-hz = /bits/ 64 <9552000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9600000 {
+			opp-hz = /bits/ 64 <9600000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9648000 {
+			opp-hz = /bits/ 64 <9648000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9696000 {
+			opp-hz = /bits/ 64 <9696000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9744000 {
+			opp-hz = /bits/ 64 <9744000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9792000 {
+			opp-hz = /bits/ 64 <9792000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9840000 {
+			opp-hz = /bits/ 64 <9840000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9888000 {
+			opp-hz = /bits/ 64 <9888000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9936000 {
+			opp-hz = /bits/ 64 <9936000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-9984000 {
+			opp-hz = /bits/ 64 <9984000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10032000 {
+			opp-hz = /bits/ 64 <10032000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10080000 {
+			opp-hz = /bits/ 64 <10080000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10128000 {
+			opp-hz = /bits/ 64 <10128000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10176000 {
+			opp-hz = /bits/ 64 <10176000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10224000 {
+			opp-hz = /bits/ 64 <10224000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10272000 {
+			opp-hz = /bits/ 64 <10272000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10320000 {
+			opp-hz = /bits/ 64 <10320000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10368000 {
+			opp-hz = /bits/ 64 <10368000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10416000 {
+			opp-hz = /bits/ 64 <10416000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10464000 {
+			opp-hz = /bits/ 64 <10464000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10512000 {
+			opp-hz = /bits/ 64 <10512000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10560000 {
+			opp-hz = /bits/ 64 <10560000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10608000 {
+			opp-hz = /bits/ 64 <10608000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10656000 {
+			opp-hz = /bits/ 64 <10656000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10704000 {
+			opp-hz = /bits/ 64 <10704000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10752000 {
+			opp-hz = /bits/ 64 <10752000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10800000 {
+			opp-hz = /bits/ 64 <10800000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10848000 {
+			opp-hz = /bits/ 64 <10848000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10896000 {
+			opp-hz = /bits/ 64 <10896000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10944000 {
+			opp-hz = /bits/ 64 <10944000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-10992000 {
+			opp-hz = /bits/ 64 <10992000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11040000 {
+			opp-hz = /bits/ 64 <11040000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11088000 {
+			opp-hz = /bits/ 64 <11088000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11136000 {
+			opp-hz = /bits/ 64 <11136000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11184000 {
+			opp-hz = /bits/ 64 <11184000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11232000 {
+			opp-hz = /bits/ 64 <11232000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11280000 {
+			opp-hz = /bits/ 64 <11280000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11328000 {
+			opp-hz = /bits/ 64 <11328000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11376000 {
+			opp-hz = /bits/ 64 <11376000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11424000 {
+			opp-hz = /bits/ 64 <11424000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11472000 {
+			opp-hz = /bits/ 64 <11472000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11520000 {
+			opp-hz = /bits/ 64 <11520000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11568000 {
+			opp-hz = /bits/ 64 <11568000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11616000 {
+			opp-hz = /bits/ 64 <11616000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11664000 {
+			opp-hz = /bits/ 64 <11664000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11712000 {
+			opp-hz = /bits/ 64 <11712000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11760000 {
+			opp-hz = /bits/ 64 <11760000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11808000 {
+			opp-hz = /bits/ 64 <11808000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11856000 {
+			opp-hz = /bits/ 64 <11856000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11904000 {
+			opp-hz = /bits/ 64 <11904000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-11952000 {
+			opp-hz = /bits/ 64 <11952000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-12000000 {
+			opp-hz = /bits/ 64 <12000000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-12048000 {
+			opp-hz = /bits/ 64 <12048000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-12096000 {
+			opp-hz = /bits/ 64 <12096000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-12144000 {
+			opp-hz = /bits/ 64 <12144000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-12192000 {
+			opp-hz = /bits/ 64 <12192000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-12240000 {
+			opp-hz = /bits/ 64 <12240000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		opp-r6-12264000 {
+			opp-hz = /bits/ 64 <12264000000>;
+			opp-level = <14>;
+			clock-latency-ns = <400000>;
+			turbo-mode;
+		};
+		/* Round-6 shared-slot OPPs: end */
+
+	};
+};
+
+&{/soc} {
+	/*
+	 * The TSMC part has the same PCIe PHY ("phy-ip" block) as T8010; the
+	 * Samsung S8000 apcie has no phy-ip region and is not described yet.
+	 */
+	pcie0: pcie@610000000 {
+		compatible = "apple,s8003-pcie";
+		device_type = "pci";
+
+		reg = <0x6 0x10000000 0x0 0x1000000>,
+		      <0x6 0x00000000 0x0 0x8000>,
+		      <0x6 0x00008000 0x0 0x4000>,
+		      <0x6 0x0a000000 0x0 0x40000>,
+		      <0x6 0x01000000 0x0 0x4000>,
+		      <0x6 0x02000000 0x0 0x4000>,
+		      <0x6 0x03000000 0x0 0x4000>,
+		      <0x6 0x04000000 0x0 0x4000>,
+		      <0x6 0x01004000 0x0 0x4000>;
+		reg-names = "config", "rc", "phy", "phy-ip",
+			    "port0", "port1", "port2", "port3",
+			    "nvmmu";
+
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 244 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 247 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 250 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 253 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 246 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "port0", "port1", "port2", "port3",
+				  "nvmmu";
+
+		msi-controller;
+		msi-parent = <&pcie0>;
+		msi-ranges = <&aic AIC_IRQ 256 IRQ_TYPE_EDGE_RISING 32>;
+		apple,msi-doorbell = <0xbffff000>;
+		apple,nvmmu-iova = <0xbc000000>;
+
+		/*
+		 * Root-complex inbound windows: 0x40000000 NVMMU FlatDMA,
+		 * 0x80000000 DART (ADT vm-offset/vm-size), 0xbc000000 NVMMU
+		 * SART, 0xbffff000 MSI. The DARTs' apple,dma-range keeps IOVAs
+		 * inside the DART window. No dma-ranges here: one that ends
+		 * below RAM empties ZONE_DMA/DMA32 (no CMA, no swiotlb).
+		 */
+		iommu-map = <0x100 &pcie0_dart0 0 1>,
+			    <0x200 &pcie0_dart1 0 1>;
+		iommu-map-mask = <0xff00>;
+
+		#address-cells = <3>;
+		#size-cells = <2>;
+		#interrupt-cells = <1>;
+		interrupt-controller;
+		bus-range = <0x00 0x0f>;
+		ranges = <0x03000000 0x0 0xc0000000
+			  0x7 0xc0000000 0x0 0x40000000>;
+
+		clocks = <&clkref>, <&clkref>, <&clkref>;
+		clock-names = "core", "aux", "ref";
+		/* ADT apcie clock-gates 57-62: pcie, pcie_aux, pcie_link0..3 */
+		power-domains = <&ps_pcie>, <&ps_pcie_aux>, <&ps_pcie_ref>,
+				<&ps_pcie_link0>, <&ps_pcie_link1>,
+				<&ps_pcie_link2>, <&ps_pcie_link3>;
+		power-domain-names = "core", "aux", "ref", "link0", "link1",
+				     "link2", "link3";
+
+		/*
+		 * Tunables iBoot puts in the live ADT (apcie-phy-tunables,
+		 * apcie-common-tunables; per bridge apcie-config-tunables and
+		 * pcie-rc-tunables), as <offset mask value>. Copied from the
+		 * j71t live ADT (iOS 16.7.10 iBoot); both bridges carry the same
+		 * values there.
+		 */
+		apple,tunable-phy = <0x098 0x0000000f 0x00000000>,
+		                    <0x154 0x00f8ff00 0x00000000>,
+		                    <0x000 0x0000318c 0x00002108>,
+		                    <0x004 0x0000318c 0x00002108>;
+		apple,tunable-common = <0x008 0x7f7f7f7f 0x00000000>,
+		                       <0x00c 0x00073f3f 0x00043f00>,
+		                       <0x010 0x00000700 0x00000000>,
+		                       <0x018 0x00ffffff 0x000c0960>,
+		                       <0x01c 0x00001fff 0x0000092c>,
+		                       <0x028 0xffffffff 0x02001000>,
+		                       <0x030 0x000000ff 0x00000009>,
+		                       <0x100 0x31100010 0x01000010>,
+		                       <0x104 0x00000011 0x00000001>,
+		                       <0x108 0x00000007 0x00000000>,
+		                       <0x10c 0x00073f3f 0x00043f00>,
+		                       <0x110 0x0333003f 0x0111000f>,
+		                       <0x120 0x000000ff 0x00000040>,
+		                       <0x128 0x0000007f 0x0000003e>,
+		                       <0x130 0x00000707 0x00000000>,
+		                       <0x134 0x00073f3f 0x00043f00>,
+		                       <0x180 0x31100010 0x01000000>,
+		                       <0x190 0x0333003f 0x0111000f>,
+		                       <0x1a0 0x000000ff 0x00000040>,
+		                       <0x1a8 0x0000007f 0x0000003e>,
+		                       <0x1b0 0x00000707 0x00000000>,
+		                       <0x1b4 0x00073f3f 0x00043f00>,
+		                       <0x200 0x31100010 0x01000000>,
+		                       <0x210 0x0333003f 0x0111000f>,
+		                       <0x220 0x000000ff 0x00000040>,
+		                       <0x228 0x0000007f 0x0000003e>,
+		                       <0x230 0x00000707 0x00000000>,
+		                       <0x234 0x00073f3f 0x00043f00>,
+		                       <0x280 0x31100010 0x01000000>,
+		                       <0x290 0x0333003f 0x0111000f>,
+		                       <0x2a0 0x000000ff 0x00000040>,
+		                       <0x2a8 0x0000007f 0x0000003e>,
+		                       <0x2b0 0x00000707 0x00000000>,
+		                       <0x2b4 0x00073f3f 0x00043f00>;
+		status = "disabled";
+
+		/*
+		 * PERST# from the j71t/j72t ADT pci-bridge0/1 function-perst.
+		 * CLKREQ# (GPIO 164/165) stays in its peripheral function:
+		 * iOS never waits on it here (no clkreq-wait-time).
+		 */
+		pcie0_port0: pci@0,0 {
+			device_type = "pci";
+			reg = <0x0 0x0 0x0 0x0 0x0>;
+			reset-gpios = <&pinctrl_ap 160 GPIO_ACTIVE_LOW>;
+			max-link-speed = <2>;
+			apple,nvme-mode;
+			/*
+			 * Linux would enable ASPM L1 on its own on DT platforms;
+			 * iOS pairs L1 with L1SS/LTR/CLKREQ# setup we don't do.
+			 */
+			aspm-no-l0s;
+			aspm-no-l1;
+			apple,tunable-config = <0x090 0x000000ff 0x00000028>,
+			                       <0x130 0x00000005 0x00000005>,
+			                       <0x134 0x00000001 0x00000001>,
+			                       <0x138 0x00007f7f 0x00000000>,
+			                       <0x13c 0x00000003 0x00000002>,
+			                       <0x140 0x0073ffff 0x00704c4b>;
+			apple,tunable-rc = <0x098 0x0000000f 0x00000000>,
+			                   <0x154 0x00f8ff00 0x00000000>;
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+		};
+
+		pcie0_port1: pci@1,0 {
+			device_type = "pci";
+			reg = <0x800 0x0 0x0 0x0 0x0>;
+			reset-gpios = <&pinctrl_ap 161 GPIO_ACTIVE_LOW>;
+			max-link-speed = <1>;
+			aspm-no-l0s;
+			aspm-no-l1;
+			apple,tunable-config = <0x090 0x000000ff 0x00000028>,
+			                       <0x130 0x00000005 0x00000005>,
+			                       <0x134 0x00000001 0x00000001>,
+			                       <0x138 0x00007f7f 0x00000000>,
+			                       <0x13c 0x00000003 0x00000002>,
+			                       <0x140 0x0073ffff 0x00704c4b>;
+			apple,tunable-rc = <0x098 0x0000000f 0x00000000>,
+			                   <0x154 0x00f8ff00 0x00000000>;
+
+			#address-cells = <3>;
+			#size-cells = <2>;
+			ranges;
+		};
 	};
 };
 
@@ -66,3 +1551,21 @@
  * the S8003 (APL1022) on 16nm. There are some minor differences
  * such as timing in cpufreq state transistions.
  */
+
+/* j71t ADT: two GPU windows; explicitly activated diagnostic only. */
+&{/soc} {
+	gpu_diag: gpu@201000000 {
+		compatible = "gpu,s8003";
+		reg = <0x2 0x01000000 0x0 0x100000>,
+		      <0x2 0x01e00000 0x0 0x100000>;
+		reg-names = "rgx", "fender";
+		power-domains = <&ps_gfx>;
+		interrupts = <AIC_IRQ 170 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 171 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 172 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 173 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 174 IRQ_TYPE_LEVEL_HIGH>;
+	};
+};
+
+#include "s8003-thermal.dtsi"

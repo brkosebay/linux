@@ -7,9 +7,25 @@
 
 #include "s800-0-3-common.dtsi"
 #include <dt-bindings/input/input.h>
+#include <dt-bindings/interrupt-controller/apple-aic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
 
 / {
 	chassis-type = "tablet";
+
+	/*
+	 * Secure Enclave. Inert unless the sep-a9 driver is enabled
+	 * (sep_a9.enable=1); the mailbox sits 0x4000 into the block.
+	 */
+	sep: sep@20da00000 {
+		compatible = "apple,s8003-sep", "apple,s8000-sep";
+		reg = <0x2 0x0da00000 0x0 0x10000>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 99 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 98 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 101 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 100 IRQ_TYPE_LEVEL_HIGH>;
+	};
 
 	gpio-keys {
 		compatible = "gpio-keys";
@@ -46,6 +62,21 @@
 	power-domains = <&ps_disp0 &ps_dp>;
 };
 
+/*
+ * The framebuffer depends on the display pipe and eDP link that the boot
+ * loader set up, and both reset when these power-domains are powered off.
+ * That happens on suspend, when genpd powers off the framebuffer's domains
+ * in the noirq phase. Mark them as always on until a display driver can
+ * bring the panel back up.
+ */
+&ps_disp0 {
+	apple,always-on;
+};
+
+&ps_dp {
+	apple,always-on;
+};
+
 &i2c0 {
 	status = "okay";
 
@@ -54,6 +85,22 @@
 		reg = <0x3c>;
 		#address-cells = <1>;
 		#size-cells = <1>;
+
+		/* D2365 event line: ADT GPIO 0x4c, not CPU PMU AIC 76. */
+		interrupt-parent = <&pinctrl_ap>;
+		interrupts = <76 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-source;
+
+		/* Child event specifiers need a PMIC irqchip before use. */
+		interrupt-controller;
+		#interrupt-cells = <1>;
+
+		/* ADT j71s/j71t/j72s/j72t: usb-input-limit-max = 0x960 mA. */
+		charger@180 {
+			reg = <0x180 0x1e>, <0xa00 0x0d>;
+			reg-names = "status", "control";
+			apple,usb-input-limit-max-microamp = <2400000>;
+		};
 
 		rtc@500 {
 			compatible = "apple,angel-pmic-rtc", "apple,antigua-pmic-rtc";

@@ -1,0 +1,180 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* Round 1 J71t peripherals. Hardware values: Apple's J71t ADT. */
+
+#include <dt-bindings/input/input.h>
+
+/*
+ * Smart Cover hall sensors: PMIC GPIO lines 0 ("halleffect") and 10
+ * ("halleffect1") in the ADT's /buttons node. Which level means "cover
+ * closed" is not measured yet (docs/periph/ds-als-hall.md H1); the guess is a
+ * magnet pulling the line low. After measuring with evtest, change the
+ * define (GPIO_ACTIVE_HIGH if SW_LID reads 1 with the cover open) and rebuild
+ * the dtb, or flip the flag of a built dtb with scripts/sensors/cover-polarity.sh.
+ */
+#define J71T_COVER0_ACTIVE	GPIO_ACTIVE_LOW
+#define J71T_COVER1_ACTIVE	GPIO_ACTIVE_LOW
+
+/ {
+	aliases {
+		serial3 = &serial3;
+		serial5 = &serial5;
+		bluetooth0 = &bluetooth;
+	};
+
+	/*
+	 * Not named "Lid Switch": systemd-logind and Omarchy's Hyprland
+	 * bindings pick the lid up by that name and would suspend on a cover
+	 * close, which does not resume yet. The ipad-lid user daemon of the
+	 * tablet layer reads these instead.
+	 *
+	 * Polled: gpio-apple-d2365 has no irq_chip, so there is no wakeup
+	 * either (docs/periph/ds-als-hall.md 4.2). Each line is its own device so
+	 * that one the PMIC keeps for itself (the driver refuses those) cannot
+	 * take the other down.
+	 */
+	smart-cover {
+		compatible = "gpio-keys-polled";
+		poll-interval = <50>;
+		label = "iPad Smart Cover";
+
+		lid-switch {
+			label = "Smart Cover (PMIC GPIO 0)";
+			gpios = <&periph_pmu_gpio 0 J71T_COVER0_ACTIVE>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_LID>;
+			debounce-interval = <50>;
+		};
+	};
+
+	/*
+	 * The second hall, which this does not tell apart from the first one
+	 * (H4): a code of its own, so evtest shows each line separately.
+	 */
+	smart-cover-aux {
+		compatible = "gpio-keys-polled";
+		poll-interval = <50>;
+		label = "iPad Smart Cover 2";
+
+		cover-switch {
+			label = "Smart Cover (PMIC GPIO 10)";
+			gpios = <&periph_pmu_gpio 10 J71T_COVER1_ACTIVE>;
+			linux,input-type = <EV_SW>;
+			linux,code = <SW_MACHINE_COVER>;
+			debounce-interval = <50>;
+		};
+	};
+};
+
+&{/soc} {
+	serial3: serial@20a0cc000 {
+		compatible = "apple,s8000-uart", "apple,s5l-uart";
+		reg = <0x2 0x0a0cc000 0 0x4000>;
+		reg-io-width = <4>;
+		interrupts = <AIC_IRQ 195 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clkref>, <&clkref>;
+		clock-names = "uart", "clk_uart_baud0";
+		power-domains = <&ps_uart3>;
+		pinctrl-0 = <&bluetooth_uart3_pins>;
+		pinctrl-names = "default";
+		uart-has-rtscts;
+		status = "okay";
+
+		bluetooth: bluetooth {
+			compatible = "apple,j71t-bcm4355-bt";
+			/* 115200 ROM rate inferred from A10; runtime rate is in ADT. */
+			current-speed = <115200>;
+			max-speed = <3000000>;
+			shutdown-gpios = <&periph_pmu_gpio 13 GPIO_ACTIVE_HIGH>;
+			device-wakeup-gpios = <&pinctrl_ap 142 GPIO_ACTIVE_HIGH>;
+		};
+	};
+
+	serial5: serial@20a0d4000 {
+		compatible = "apple,s5l-uart";
+		reg = <0x2 0x0a0d4000 0 0x4000>;
+		reg-io-width = <4>;
+		interrupts = <AIC_IRQ 197 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clkref>, <&clkref>;
+		clock-names = "uart", "clk_uart_baud0";
+		power-domains = <&ps_uart5>;
+		pinctrl-0 = <&battery_swi_pins>;
+		pinctrl-names = "default";
+		status = "okay";
+
+		onewire {
+			compatible = "ti,hdq-uart";
+
+			battery: fuel-gauge {
+				/* ADT bq27540; uses the experimental J172 map, not an ID claim. */
+				compatible = "apple,j71t-bq27540";
+			};
+		};
+	};
+};
+
+&pinctrl_ap {
+	bluetooth_uart3_pins: bluetooth-uart3-pins {
+		pinmux = <APPLE_PINMUX(88, 1)>, <APPLE_PINMUX(89, 1)>,
+			 <APPLE_PINMUX(90, 1)>, <APPLE_PINMUX(91, 1)>;
+	};
+
+	battery_swi_pins: battery-swi-pins {
+		pinmux = <APPLE_PINMUX(2, 1)>;
+	};
+};
+
+&{/soc/i2c@20a110000/pmic@3c} {
+	/* Internal register offsets are not CPU MMIO resources. */
+	#size-cells = <0>;
+
+	rtc@500 {
+		reg = <0x500>;
+	};
+
+	nvmem@5000 {
+		reg = <0x5000>;
+		size = <0x28>;
+		read-only;
+	};
+
+	periph_pmu_gpio: gpio {
+		compatible = "apple,d2365-pmic-gpio";
+		gpio-controller;
+		#gpio-cells = <2>;
+		/* Line 13 is Bluetooth enable, 0 and 10 the Smart Cover halls. */
+		gpio-reserved-ranges = <1 9>, <11 2>, <14 10>;
+	};
+
+	charger@180 {
+		/* Automatic policy uses source authorization and private CBAT. */
+		compatible = "apple,j71t-d2365-charger";
+		reg = <0x180>, <0xa00>;
+		reg-names = "status", "control";
+		power-supplies = <&periph_tristar>;
+	};
+};
+
+&i2c2 {
+	status = "okay";
+
+	light-sensor@39 {
+		compatible = "apple,ct819", "amstaos,tsl2581";
+		reg = <0x39>;
+		interrupts-extended = <&pinctrl_ap 71 IRQ_TYPE_LEVEL_LOW>;
+		firmware-name = "apple/j71t-LSCI.bin";
+	};
+};
+
+&i2c0 {
+	periph_tristar: power-controller@1a {
+		apple,usb-role-switch = <&usb_role>;
+		compatible = "apple,j71t-cbtl1610-power";
+		usb-controller = <&usbdev>;
+		apple,pmic = <&{/soc/i2c@20a110000/pmic@3c}>;
+		reg = <0x1a>;
+	};
+};
+
+&usbdev {
+	apple,host-current-budget;
+};

@@ -82,6 +82,11 @@
 		#power-domain-cells = <0>;
 		#reset-cells = <0>;
 		label = "gpio";
+		/*
+		 * Holds the PCIe PERST# lines and the wake buttons: suspend
+		 * must not power it off under live links.
+		 */
+		apple,always-on;
 	};
 
 	ps_pms: power-controller@80120 {
