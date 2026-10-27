@@ -93,6 +93,11 @@ struct io_pgtable_cfg {
 	 *	kernel bug, which would justify the WARN_ON().  But for GPU
 	 *	drivers, this could be under control of userspace.  Which
 	 *	deserves an error return, but not to spam dmesg.
+	 *
+	 * IO_PGTABLE_QUIRK_APPLE_DART_S5L8960X: (Apple DART format) A7-A11
+	 *	DARTs. Table entries need bits 1:0 set (bit 0 alone isn't a
+	 *	valid table entry), and leaf PTEs have no DART1 subpage fields
+	 *	(S5L8960X puts its subpage range elsewhere; bit 1 disables it).
 	 */
 	#define IO_PGTABLE_QUIRK_ARM_NS			BIT(0)
 	#define IO_PGTABLE_QUIRK_NO_PERMS		BIT(1)
@@ -103,6 +108,7 @@ struct io_pgtable_cfg {
 	#define IO_PGTABLE_QUIRK_ARM_HD			BIT(7)
 	#define IO_PGTABLE_QUIRK_ARM_S2FWB		BIT(8)
 	#define IO_PGTABLE_QUIRK_NO_WARN		BIT(9)
+	#define IO_PGTABLE_QUIRK_APPLE_DART_S5L8960X	BIT(10)
 	unsigned long			quirks;
 	unsigned long			pgsize_bitmap;
 	unsigned int			ias;

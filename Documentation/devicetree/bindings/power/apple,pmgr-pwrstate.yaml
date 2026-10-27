@@ -76,6 +76,14 @@ properties:
       Forces this power domain to always be powered up.
     type: boolean
 
+  apple,idle-power-gate:
+    description: |
+      The block may discard its boot minimum-state floor when genpd powers
+      it off. The original floor is restored before power-on. Requires a
+      driver opt-in as this is experimental on S8000 power controllers.
+      Never use for firmware-owned scanout, CPU, fabric or wake domains.
+    type: boolean
+
   apple,min-state:
     description:
       Specifies the minimum power state for auto-PM.

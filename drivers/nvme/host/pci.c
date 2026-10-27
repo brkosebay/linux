@@ -5,6 +5,8 @@
  */
 
 #include <linux/acpi.h>
+#include <linux/console.h>
+#include <linux/apple-ans.h>
 #include <linux/async.h>
 #include <linux/blkdev.h>
 #include <linux/blk-mq-dma.h>
@@ -14,12 +16,15 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kstrtox.h>
+#include <linux/kernel_stat.h>
 #include <linux/memremap.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/kexec.h>
 #include <linux/mutex.h>
 #include <linux/nodemask.h>
 #include <linux/once.h>
+#include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/suspend.h>
 #include <linux/t10-pi.h>
@@ -30,6 +35,9 @@
 
 #include "trace.h"
 #include "nvme.h"
+#include "pci-internal.h"
+
+#define PCI_DEVICE_ID_APPLE_ANS_NVME	0x2002
 
 #define SQ_SIZE(q)	((q)->q_depth << (q)->sqes)
 #define CQ_SIZE(q)	((q)->q_depth * sizeof(struct nvme_completion))
@@ -41,7 +49,6 @@
  * Arbitrary upper bound.
  */
 #define NVME_MAX_BYTES		SZ_8M
-#define NVME_MAX_NR_DESCRIPTORS	5
 
 /*
  * For data SGLs we support a single descriptors worth of SGL entries.
@@ -277,66 +284,104 @@ static bool noacpi;
 module_param(noacpi, bool, 0444);
 MODULE_PARM_DESC(noacpi, "disable acpi bios quirks");
 
-struct nvme_dev;
-struct nvme_queue;
+/*
+ * CONFIG_NVME_PCI_WRITE_WINDOW: the one range the read-only allowlist lets
+ * NVMe Write reach, namespace nsid, LBAs first..last inclusive. Only
+ * nvme.write_window= on the command line sets it.
+ */
+static struct {
+	bool set;
+	u32 nsid;
+	u64 first;
+	u64 last;
+} write_window;
+
+#ifdef CONFIG_NVME_PCI_WRITE_WINDOW
+static char write_window_param[64];
+
+static int write_window_set(const char *val, const struct kernel_param *kp)
+{
+	char buf[64], *lba, *last;
+	u64 first_lba, last_lba;
+	u32 nsid;
+
+	if (strscpy(buf, val, sizeof(buf)) < 0)
+		return -EINVAL;
+	lba = strchr(buf, ':');
+	last = lba ? strchr(lba + 1, '-') : NULL;
+	if (!last)
+		return -EINVAL;
+	*lba++ = '\0';
+	*last++ = '\0';
+	if (kstrtou32(buf, 0, &nsid) || kstrtou64(lba, 0, &first_lba) ||
+	    kstrtou64(strim(last), 0, &last_lba) || !nsid ||
+	    nsid == NVME_NSID_ALL || first_lba > last_lba)
+		return -EINVAL;
+
+	write_window.nsid = nsid;
+	write_window.first = first_lba;
+	write_window.last = last_lba;
+	write_window.set = true;
+	return param_set_copystring(val, kp);
+}
+
+static const struct kernel_param_ops write_window_ops = {
+	.set = write_window_set,
+	.get = param_get_string,
+};
+
+static struct kparam_string write_window_string = {
+	.maxlen = sizeof(write_window_param),
+	.string = write_window_param,
+};
+
+module_param_cb(write_window, &write_window_ops, &write_window_string, 0444);
+MODULE_PARM_DESC(write_window,
+	"NSID:FIRST-LAST: on a read-only (CONFIG_NVME_PCI_READ_ONLY) controller, allow NVMe Write to these LBAs (inclusive) of namespace NSID and nothing else. Boot-time only.");
+#endif
+
+static bool nvme_pci_write_window_active(void)
+{
+	return IS_ENABLED(CONFIG_NVME_PCI_WRITE_WINDOW) && write_window.set;
+}
+
+/* A Write whose whole LBA range lies in the window */
+static bool nvme_pci_in_write_window(const struct nvme_command *cmd)
+{
+	u64 slba = le64_to_cpu(cmd->rw.slba);
+	u64 nlb = (u64)le16_to_cpu(cmd->rw.length) + 1;
+
+	return nvme_pci_write_window_active() &&
+	       le32_to_cpu(cmd->rw.nsid) == write_window.nsid &&
+	       slba >= write_window.first && slba <= write_window.last &&
+	       nlb <= write_window.last - slba + 1;
+}
+
+/*
+ * The allowlist refuses trim and Write Zeroes even inside the window, so
+ * don't advertise them: the block layer would turn the refusal into EIO
+ * where callers expect EOPNOTSUPP and a fallback to plain writes.
+ * NVME_QUIRK_DISABLE_WRITE_ZEROES (set at probe) covers Write Zeroes;
+ * namespaces read oncs and dmrsl when they are scanned, after this. The
+ * scan re-reads dmrsl from Identify (CNS 06h) unless that is skipped; its
+ * other fields only size trim and Write Zeroes too.
+ */
+static void nvme_pci_write_window_limits(struct nvme_dev *dev)
+{
+	if (!nvme_pci_write_window_active())
+		return;
+	dev_info(dev->ctrl.device,
+		 "write window: controller ONCS %#x VWC %#x DMRSL %u; trim and write zeroes not advertised\n",
+		 dev->ctrl.oncs, dev->ctrl.vwc, dev->ctrl.dmrsl);
+	dev->ctrl.oncs &= ~NVME_CTRL_ONCS_DSM;
+	dev->ctrl.dmrl = 0;
+	dev->ctrl.dmrsl = 0;
+	set_bit(NVME_CTRL_SKIP_ID_CNS_CS, &dev->ctrl.flags);
+}
 
 static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown);
 static void nvme_delete_io_queues(struct nvme_dev *dev);
 static void nvme_update_attrs(struct nvme_dev *dev);
-
-struct nvme_descriptor_pools {
-	struct dma_pool *large;
-	struct dma_pool *small;
-};
-
-/*
- * Represents an NVM Express device.  Each nvme_dev is a PCI function.
- */
-struct nvme_dev {
-	struct nvme_queue *queues;
-	struct blk_mq_tag_set tagset;
-	struct blk_mq_tag_set admin_tagset;
-	u32 __iomem *dbs;
-	struct device *dev;
-	unsigned online_queues;
-	unsigned max_qid;
-	unsigned io_queues[HCTX_MAX_TYPES];
-	unsigned int num_vecs;
-	u32 q_depth;
-	int io_sqes;
-	u32 db_stride;
-	void __iomem *bar;
-	unsigned long bar_mapped_size;
-	struct mutex shutdown_lock;
-	bool subsystem;
-	u64 cmb_size;
-	bool cmb_use_sqes;
-	u32 cmbsz;
-	u32 cmbloc;
-	struct nvme_ctrl ctrl;
-	u32 last_ps;
-	bool hmb;
-	struct sg_table *hmb_sgt;
-	mempool_t *dmavec_mempool;
-
-	/* shadow doorbell buffer support: */
-	__le32 *dbbuf_dbs;
-	dma_addr_t dbbuf_dbs_dma_addr;
-	__le32 *dbbuf_eis;
-	dma_addr_t dbbuf_eis_dma_addr;
-
-	/* host memory buffer support: */
-	u64 host_mem_size;
-	u32 nr_host_mem_descs;
-	u32 host_mem_descs_size;
-	dma_addr_t host_mem_descs_dma;
-	struct nvme_host_mem_buf_desc *host_mem_descs;
-	void **host_mem_desc_bufs;
-	unsigned int nr_allocated_queues;
-	unsigned int nr_write_queues;
-	unsigned int nr_poll_queues;
-	struct nvme_descriptor_pools descriptor_pools[];
-};
 
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
 {
@@ -358,97 +403,6 @@ static inline struct nvme_dev *to_nvme_dev(struct nvme_ctrl *ctrl)
 {
 	return container_of(ctrl, struct nvme_dev, ctrl);
 }
-
-/*
- * An NVM Express queue.  Each device has at least two (one for admin
- * commands and one for I/O commands).
- */
-struct nvme_queue {
-	struct nvme_dev *dev;
-	struct nvme_descriptor_pools descriptor_pools;
-	spinlock_t sq_lock;
-	void *sq_cmds
-		__guarded_by(&sq_lock);
-	 /* only used for poll queues: */
-	spinlock_t cq_poll_lock ____cacheline_aligned_in_smp;
-	struct nvme_completion *cqes;
-	dma_addr_t sq_dma_addr;
-	dma_addr_t cq_dma_addr;
-	u32 __iomem *q_db;
-	u32 q_depth;
-	u16 cq_vector;
-	u16 cq_head;
-	u16 sq_tail
-		__guarded_by(&sq_lock);
-	u16 last_sq_tail
-		__guarded_by(&sq_lock);
-	u16 qid;
-	u8 cq_phase;
-	u8 sqes;
-	unsigned long flags;
-#define NVMEQ_ENABLED		0
-#define NVMEQ_SQ_CMB		1
-#define NVMEQ_DELETE_ERROR	2
-#define NVMEQ_POLLED		3
-	__le32 *dbbuf_sq_db;
-	__le32 *dbbuf_cq_db;
-	__le32 *dbbuf_sq_ei;
-	__le32 *dbbuf_cq_ei;
-	struct completion delete_done;
-};
-
-/* bits for iod->flags */
-enum nvme_iod_flags {
-	/* this command has been aborted by the timeout handler */
-	IOD_ABORTED		= 1U << 0,
-
-	/* uses the small descriptor pool */
-	IOD_SMALL_DESCRIPTOR	= 1U << 1,
-
-	/* single segment dma mapping */
-	IOD_SINGLE_SEGMENT	= 1U << 2,
-
-	/* Data payload contains p2p memory */
-	IOD_DATA_P2P		= 1U << 3,
-
-	/* Metadata contains p2p memory */
-	IOD_META_P2P		= 1U << 4,
-
-	/* Data payload contains MMIO memory */
-	IOD_DATA_MMIO		= 1U << 5,
-
-	/* Metadata contains MMIO memory */
-	IOD_META_MMIO		= 1U << 6,
-
-	/* Metadata using non-coalesced MPTR */
-	IOD_SINGLE_META_SEGMENT	= 1U << 7,
-};
-
-struct nvme_dma_vec {
-	dma_addr_t addr;
-	unsigned int len;
-};
-
-/*
- * The nvme_iod describes the data in an I/O.
- */
-struct nvme_iod {
-	struct nvme_request req;
-	struct nvme_command cmd;
-	u8 flags;
-	u8 nr_descriptors;
-
-	size_t total_len;
-	struct dma_iova_state dma_state;
-	void *descriptors[NVME_MAX_NR_DESCRIPTORS];
-	struct nvme_dma_vec *dma_vecs;
-	unsigned int nr_dma_vecs;
-
-	dma_addr_t meta_dma;
-	size_t meta_total_len;
-	struct dma_iova_state meta_dma_state;
-	struct nvme_sgl_desc *meta_descriptor;
-};
 
 static inline unsigned int nvme_dbbuf_size(struct nvme_dev *dev)
 {
@@ -737,10 +691,118 @@ static inline void nvme_write_sq_db(struct nvme_queue *nvmeq, bool write_sq)
 	nvmeq->last_sq_tail = nvmeq->sq_tail;
 }
 
+/*
+ * CONFIG_NVME_PCI_READ_ONLY: allowlist of the commands this kernel may send.
+ *
+ * I/O queues may only read and flush. The admin queue may only identify,
+ * read logs and features, manage its own queues, and set the few volatile
+ * features nvme-core configures at init. Everything else (write, write
+ * zeroes, DSM/trim, format, sanitize, firmware download/commit, namespace
+ * management, security send, directives, vendor-specific opcodes, saved
+ * features) is refused before it reaches the submission queue. The one
+ * exception is CONFIG_NVME_PCI_WRITE_WINDOW: a Write inside nvme.write_window.
+ */
+static bool nvme_pci_ro_cmd_allowed(const struct nvme_queue *nvmeq,
+				    const struct nvme_command *cmd)
+{
+	u32 cdw10;
+
+	if (!IS_ENABLED(CONFIG_NVME_PCI_READ_ONLY))
+		return true;
+
+	if (nvmeq->qid) {
+		switch (cmd->common.opcode) {
+		case nvme_cmd_flush:
+		case nvme_cmd_read:
+			return true;
+		case nvme_cmd_write:
+			return nvme_pci_in_write_window(cmd);
+		default:
+			return false;
+		}
+	}
+
+	switch (cmd->common.opcode) {
+	case nvme_admin_delete_sq:
+	case nvme_admin_create_sq:
+	case nvme_admin_get_log_page:
+	case nvme_admin_delete_cq:
+	case nvme_admin_create_cq:
+	case nvme_admin_identify:
+	case nvme_admin_abort_cmd:
+	case nvme_admin_get_features:
+	case nvme_admin_async_event:
+	case nvme_admin_keep_alive:
+		return true;
+	case nvme_admin_set_features:
+		cdw10 = le32_to_cpu(cmd->features.fid);
+		/* SV: the feature would persist across power cycles */
+		if (cdw10 & BIT(31))
+			return false;
+		switch (cdw10 & 0xff) {
+		case NVME_FEAT_POWER_MGMT:
+		case NVME_FEAT_TEMP_THRESH:
+		case NVME_FEAT_NUM_QUEUES:
+		case NVME_FEAT_IRQ_COALESCE:
+		case NVME_FEAT_ASYNC_EVENT:
+		case NVME_FEAT_AUTO_PST:
+		case NVME_FEAT_TIMESTAMP:
+		case NVME_FEAT_KATO:
+		case NVME_FEAT_HOST_BEHAVIOR:
+			return true;
+		default:
+			return false;
+		}
+	default:
+		return false;
+	}
+}
+
+/*
+ * Both gates: the CONFIG_NVME_PCI_READ_ONLY allowlist above and the
+ * device's own policy (Apple ANS: protected system namespaces), which
+ * holds even without CONFIG_NVME_PCI_READ_ONLY.
+ */
+static bool nvme_pci_cmd_allowed(const struct nvme_queue *nvmeq,
+				 const struct nvme_command *cmd)
+{
+	const struct nvme_pci_dma_ops *ops = nvmeq->dev->dma_ops;
+
+	if (!nvme_pci_ro_cmd_allowed(nvmeq, cmd))
+		return false;
+	if (ops && ops->cmd_allowed &&
+	    !ops->cmd_allowed(nvmeq->dev, nvmeq->qid, cmd))
+		return false;
+	return true;
+}
+
 static inline void nvme_sq_copy_cmd(struct nvme_queue *nvmeq,
 				    struct nvme_command *cmd)
 	__must_hold(&nvmeq->sq_lock)
 {
+	struct nvme_command safe;
+
+	/*
+	 * Backstop for CONFIG_NVME_PCI_READ_ONLY: nvme_prep_rq() already
+	 * failed disallowed requests, so getting here is a bug. Never let the
+	 * command reach the device; queue a harmless one in its slot so the
+	 * SQ tail stays consistent.
+	 */
+	if (unlikely(!nvme_pci_cmd_allowed(nvmeq, cmd))) {
+		WARN_ONCE(1, "nvme: read-only: neutralized opcode %#x on qid %u\n",
+			  cmd->common.opcode, nvmeq->qid);
+		memset(&safe, 0, sizeof(safe));
+		safe.common.command_id = cmd->common.command_id;
+		if (nvmeq->qid) {
+			safe.common.opcode = nvme_cmd_flush;
+			safe.common.nsid = cmd->common.nsid;
+		} else {
+			safe.features.opcode = nvme_admin_get_features;
+			safe.features.fid = cpu_to_le32(NVME_FEAT_NUM_QUEUES);
+		}
+		cmd = &safe;
+	}
+
 	memcpy(nvmeq->sq_cmds + (nvmeq->sq_tail << nvmeq->sqes),
 		absolute_pointer(cmd), sizeof(*cmd));
 	if (++nvmeq->sq_tail == nvmeq->q_depth)
@@ -942,6 +1004,10 @@ static void nvme_unmap_data(struct request *req)
 	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
 	struct device *dma_dev = nvmeq->dev->dev;
 	unsigned int attrs = 0;
+
+	if (nvmeq->dev->dma_ops && nvmeq->dev->dma_ops->unmap_data &&
+	    nvmeq->dev->dma_ops->unmap_data(req))
+		return;
 
 	if (iod->flags & IOD_SINGLE_SEGMENT) {
 		static_assert(offsetof(union nvme_data_ptr, prp1) ==
@@ -1257,6 +1323,12 @@ static blk_status_t nvme_map_data(struct request *req)
 	struct blk_dma_iter iter;
 	blk_status_t ret;
 
+	if (dev->dma_ops && dev->dma_ops->map_data) {
+		ret = dev->dma_ops->map_data(req);
+		if (ret != BLK_STS_NOTSUPP)
+			return ret;
+	}
+
 	/*
 	 * Try to skip the DMA iterator for single segment requests, as that
 	 * significantly improves performances for small I/O sizes.
@@ -1412,10 +1484,32 @@ static blk_status_t nvme_prep_rq(struct request *req)
 	iod->total_len = 0;
 	iod->meta_total_len = 0;
 	iod->nr_dma_vecs = 0;
+	iod->dma_vecs = NULL;
+	iod->dma_private = NULL;
 
 	ret = nvme_setup_cmd(req->q->queuedata, req);
 	if (ret)
 		return ret;
+
+	if (unlikely(!nvme_pci_cmd_allowed(req->mq_hctx->driver_data,
+					   &iod->cmd))) {
+		if (iod->cmd.common.opcode == nvme_cmd_write &&
+		    nvme_pci_write_window_active())
+			dev_err_ratelimited(nvme_req(req)->ctrl->device,
+					    "read-only: refused write nsid %u LBA %llu+%u outside the write window\n",
+					    le32_to_cpu(iod->cmd.rw.nsid),
+					    le64_to_cpu(iod->cmd.rw.slba),
+					    le16_to_cpu(iod->cmd.rw.length) + 1);
+		else
+			dev_err_ratelimited(nvme_req(req)->ctrl->device,
+					    "read-only: refused opcode %#x nsid %u on %s queue\n",
+					    iod->cmd.common.opcode,
+					    le32_to_cpu(iod->cmd.common.nsid),
+					    nvme_req(req)->ctrl->admin_q == req->q ?
+					    "admin" : "I/O");
+		ret = BLK_STS_IOERR;
+		goto out_free_cmd;
+	}
 
 	if (blk_rq_nr_phys_segments(req)) {
 		ret = nvme_map_data(req);
@@ -1638,12 +1732,70 @@ static inline bool nvme_poll_cq(struct nvme_queue *nvmeq,
 	return found;
 }
 
+/*
+ * Apple ANS signals the admin and I/O CQs through one MSI
+ * (NVME_QUIRK_SINGLE_VECTOR). Servicing one CQ per shared-IRQ action can
+ * leave a completion that reached the admin CQ after its action ran, while
+ * the I/O action was still acknowledging its own CQ. Warm j71t boots then
+ * got no further MSI: the IRQ count froze with completions waiting in both
+ * CQs and every command waited for its timeout. Each invocation therefore
+ * services every CQ on the vector and rescans after its doorbell writes.
+ * The actions of one IRQ never run concurrently, so this needs no more
+ * locking than one CQ does upstream. Threaded handlers can run concurrently
+ * and keep the per-queue behaviour.
+ */
+static bool nvme_apple_ans_shared_vector(struct nvme_dev *dev)
+{
+	return dev->dma_ops == &nvme_pci_apple_ans_ops &&
+	       (dev->ctrl.quirks & NVME_QUIRK_SINGLE_VECTOR) &&
+	       !use_threaded_interrupts;
+}
+
+static bool nvme_apple_ans_vector_queue(struct nvme_queue *q, u16 vector)
+{
+	return test_bit(NVMEQ_ENABLED, &q->flags) &&
+	       !test_bit(NVMEQ_POLLED, &q->flags) && q->cq_vector == vector;
+}
+
+/* Hard IRQ only: returns after a full pass over the vector finds nothing. */
+static bool nvme_apple_ans_irq_vector(struct nvme_dev *dev, u16 vector,
+				      struct io_comp_batch *iob)
+{
+	bool found = false, more;
+	unsigned int i;
+
+	do {
+		more = false;
+		for (i = 0; i < dev->ctrl.queue_count; i++) {
+			struct nvme_queue *q = &dev->queues[i];
+
+			if (nvme_apple_ans_vector_queue(q, vector) &&
+			    nvme_poll_cq(q, q->qid ? iob : NULL))
+				more = true;
+		}
+		found |= more;
+	} while (more);
+	return found;
+}
+
 static irqreturn_t nvme_irq(int irq, void *data)
 {
 	struct nvme_queue *nvmeq = data;
+	struct nvme_dev *dev = nvmeq->dev;
 	DEFINE_IO_COMP_BATCH(iob);
+	bool found;
 
-	if (nvme_poll_cq(nvmeq, &iob)) {
+	if (nvme_apple_ans_shared_vector(dev)) {
+		/* Device evidence: did the vector signal again after a drain? */
+		if (unlikely(test_bit(ANS_VECTOR_DRAINED, &dev->apple_ans_flags)) &&
+		    test_and_clear_bit(ANS_VECTOR_DRAINED, &dev->apple_ans_flags))
+			dev_info(dev->dev, "Apple ANS: MSI resumed after vector drain (irq %d)\n",
+				 irq);
+		found = nvme_apple_ans_irq_vector(dev, nvmeq->cq_vector, &iob);
+	} else {
+		found = nvme_poll_cq(nvmeq, &iob);
+	}
+	if (found) {
 		if (!rq_list_empty(&iob.req_list))
 			nvme_pci_complete_batch(&iob);
 		return IRQ_HANDLED;
@@ -1677,6 +1829,97 @@ static void nvme_poll_irqdisable(struct nvme_queue *nvmeq)
 	nvme_poll_cq(nvmeq, NULL);
 	spin_unlock(&nvmeq->cq_poll_lock);
 	enable_irq(irq);
+}
+
+/*
+ * nvme_poll_irqdisable() for the shared ANS vector. Draining one CQ cannot
+ * restart a silent vector while the other CQ still holds a completion, so
+ * drain all of them. The log line and the "MSI resumed" report that follows
+ * it tell whether the controller signals again once every CQ is empty.
+ */
+static void nvme_apple_ans_drain_vector(struct nvme_queue *nvmeq,
+					const char *reason)
+{
+	struct nvme_dev *dev = nvmeq->dev;
+	int irq = pci_irq_vector(to_pci_dev(dev->dev), nvmeq->cq_vector);
+	unsigned int i, count = irq > 0 ? kstat_irqs_usr(irq) : 0;
+	unsigned long found = 0;
+	bool more, hit;
+
+	disable_irq(irq);
+	do {
+		more = false;
+		for (i = 0; i < dev->ctrl.queue_count; i++) {
+			struct nvme_queue *q = &dev->queues[i];
+
+			if (!nvme_apple_ans_vector_queue(q, nvmeq->cq_vector))
+				continue;
+			spin_lock(&q->cq_poll_lock);
+			hit = nvme_poll_cq(q, NULL);
+			spin_unlock(&q->cq_poll_lock);
+			if (hit) {
+				found |= BIT(min_t(unsigned int, i, BITS_PER_LONG - 1));
+				more = true;
+			}
+		}
+	} while (more);
+	set_bit(ANS_VECTOR_DRAINED, &dev->apple_ans_flags);
+	enable_irq(irq);
+	dev_warn_ratelimited(dev->dev, "Apple ANS: %s: drained every CQ on vector %u, completions on queues %#lx, irq %d count %u\n",
+			     reason, nvmeq->cq_vector, found, irq, count);
+}
+
+static unsigned int apple_ans_irq_rescue_ms;
+module_param(apple_ans_irq_rescue_ms, uint, 0444);
+MODULE_PARM_DESC(apple_ans_irq_rescue_ms,
+		 "Apple ANS: drain the shared MSI after an unsignalled completion waits 1-2 periods of this many ms (0 = off)");
+
+/*
+ * Optional safety net for the shared ANS vector. A live vector consumes a
+ * completion within microseconds; one still pending at the same CQ head on
+ * two consecutive ticks was not signalled, so drain it now instead of at
+ * the 5-second timeout. Reads are lockless; a stale view only delays or
+ * repeats a drain, which is safe.
+ */
+static void nvme_apple_ans_irq_rescue_work(struct work_struct *work)
+{
+	struct nvme_dev *dev = container_of(to_delayed_work(work),
+					    struct nvme_dev, ans_irq_rescue);
+	unsigned int i, n;
+
+	if (nvme_ctrl_state(&dev->ctrl) != NVME_CTRL_LIVE)
+		return;
+	n = min_t(unsigned int, dev->ctrl.queue_count,
+		  ARRAY_SIZE(dev->ans_irq_rescue_mark));
+	for (i = 0; i < n; i++) {
+		struct nvme_queue *q = &dev->queues[i];
+		u32 mark = 0;
+
+		if (nvme_apple_ans_vector_queue(q, 0) && nvme_cqe_pending(q))
+			mark = BIT(31) | READ_ONCE(q->cq_phase) << 16 |
+			       READ_ONCE(q->cq_head);
+		if (mark && mark == dev->ans_irq_rescue_mark[i]) {
+			nvme_apple_ans_drain_vector(q, "IRQ rescue");
+			memset(dev->ans_irq_rescue_mark, 0,
+			       sizeof(dev->ans_irq_rescue_mark));
+			break;
+		}
+		dev->ans_irq_rescue_mark[i] = mark;
+	}
+	schedule_delayed_work(&dev->ans_irq_rescue,
+			      msecs_to_jiffies(apple_ans_irq_rescue_ms));
+}
+
+static void nvme_apple_ans_irq_rescue_start(struct nvme_dev *dev)
+{
+	if (!apple_ans_irq_rescue_ms || !nvme_apple_ans_shared_vector(dev) ||
+	    dev->online_queues < 2)
+		return;
+	memset(dev->ans_irq_rescue_mark, 0, sizeof(dev->ans_irq_rescue_mark));
+	dev_info(dev->dev, "Apple ANS: IRQ rescue every %u ms\n",
+		 apple_ans_irq_rescue_ms);
+	schedule_delayed_work(&dev->ans_irq_rescue,
+			      msecs_to_jiffies(apple_ans_irq_rescue_ms));
 }
 
 static int nvme_poll(struct blk_mq_hw_ctx *hctx, struct io_comp_batch *iob)
@@ -1883,6 +2126,157 @@ static void nvme_warn_reset(struct nvme_dev *dev, u32 csts)
 		 "Try \"nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off\" and report a bug\n");
 }
 
+/* No endpoint MMIO/config or doorbell reads: safe first evidence for ANS. */
+static void nvme_apple_ans_dump(struct nvme_dev *dev, const char *reason)
+{
+	unsigned int i;
+
+	dev_info(dev->dev, "Apple ANS: snapshot %s state %d online %u allocated %u vectors %u recovery_used %u\n",
+		 reason, nvme_ctrl_state(&dev->ctrl), dev->online_queues,
+		 dev->ctrl.queue_count, dev->num_vecs,
+		 test_bit(0, &dev->apple_ans_flags));
+	apple_ans_host_dump(dev->dev, reason);
+	for (i = 0; i < dev->ctrl.queue_count; i++) {
+		struct nvme_queue *q = &dev->queues[i];
+		u16 head = READ_ONCE(q->cq_head);
+		struct nvme_completion *cqe;
+		int irq = -1;
+
+		if (!q->cqes || head >= q->q_depth)
+			continue;
+		cqe = &q->cqes[head];
+		if (test_bit(NVMEQ_ENABLED, &q->flags) &&
+		    !test_bit(NVMEQ_POLLED, &q->flags))
+			irq = pci_irq_vector(to_pci_dev(dev->dev), q->cq_vector);
+		dev_info(dev->dev, "Apple ANS: q%u flags %#lx depth %u SQ tail %u/%u CQ head %u phase %u next status %#x cid %#x sqhead %u vector %u irq %d count %u SQ %pad CQ %pad\n",
+			 i, READ_ONCE(q->flags), q->q_depth,
+			 READ_ONCE(q->sq_tail), READ_ONCE(q->last_sq_tail),
+			 head, READ_ONCE(q->cq_phase),
+			 le16_to_cpu(READ_ONCE(cqe->status)),
+			 le16_to_cpu(READ_ONCE(cqe->command_id)),
+			 le16_to_cpu(READ_ONCE(cqe->sq_head)), q->cq_vector,
+			 irq, irq > 0 ? kstat_irqs_usr(irq) : 0,
+			 &q->sq_dma_addr, &q->cq_dma_addr);
+	}
+}
+
+/* Five seconds per command, NOWAIT tag allocation, no retry/abort loop.
+ * The timeout callback blocks DMA and cancels requests before the buffers can
+ * be freed. This runs in reset_work before nvme_start_ctrl publishes disks.
+ */
+static int nvme_apple_ans_health_cmd(struct nvme_dev *dev,
+				     struct request_queue *q,
+				     struct nvme_command *cmd, void *buffer,
+				     unsigned int size, bool *unhealthy)
+{
+	struct request *req;
+	int ret;
+
+	req = blk_mq_alloc_request(q, nvme_req_op(cmd), BLK_MQ_REQ_NOWAIT);
+	if (IS_ERR(req))
+		return PTR_ERR(req);
+	nvme_init_request(req, cmd);
+	req->timeout = 5 * HZ;
+	ret = blk_rq_map_kern(req, buffer, size, GFP_KERNEL);
+	if (!ret) {
+		ret = nvme_execute_rq(req, false);
+		/* Only the timeout path proves that the controller stopped
+		 * responding. Allocation/mapping errors and rejected commands
+		 * leave this diagnostic inconclusive, never justify a link cycle.
+		 */
+		*unhealthy = test_bit(ANS_HEALTH_FAILED, &dev->apple_ans_flags);
+	}
+	blk_mq_free_request(req);
+	return ret;
+}
+
+static int nvme_apple_ans_health(struct nvme_dev *dev, bool *unhealthy)
+{
+	struct queue_limits lim;
+	struct nvme_command cmd = { };
+	struct request_queue *q;
+	struct nvme_id_ns *id;
+	void *buffer;
+	u64 data_lba;
+	u32 lbs;
+	u8 format;
+	int ret;
+
+	*unhealthy = false;
+	if (dev->online_queues < 2 || !dev->ctrl.tagset || !dev->ctrl.admin_q) {
+		ret = -ENODEV;
+		goto report;
+	}
+	id = kzalloc_obj(*id);
+	buffer = kzalloc(8192, GFP_KERNEL);
+	if (!id || !buffer) {
+		ret = -ENOMEM;
+		goto free;
+	}
+	set_bit(ANS_HEALTH_ACTIVE, &dev->apple_ans_flags);
+	cmd.identify.opcode = nvme_admin_identify;
+	cmd.identify.nsid = cpu_to_le32(1);
+	cmd.identify.cns = NVME_ID_CNS_NS;
+	ret = nvme_apple_ans_health_cmd(dev, dev->ctrl.admin_q, &cmd, id,
+					sizeof(*id), unhealthy);
+	if (ret)
+		goto done;
+	format = nvme_lbaf_index(id->flbas);
+	if (id->lbaf[format].ms || id->lbaf[format].ds < 9 ||
+	    id->lbaf[format].ds > 12) {
+		ret = -EINVAL;
+		goto done;
+	}
+	lbs = 1U << id->lbaf[format].ds;
+	/* Identify has already installed validated controller limits on the
+	 * admin queue. Keep its conservative PRP boundary/alignment rules for
+	 * these passthrough reads, including at least PAGE_SECTORS (32 on A9).
+	 * The diagnostic's 8 KiB transfer size is not a legal queue maximum.
+	 */
+	lim = dev->ctrl.admin_q->limits;
+	lim.logical_block_size = lbs;
+	lim.physical_block_size = lbs;
+	q = blk_mq_alloc_queue(&dev->tagset, &lim, NULL);
+	if (IS_ERR(q)) {
+		ret = PTR_ERR(q);
+		goto done;
+	}
+	/* NSID 1 only. Read MBR/GPT, then a block inside the existing root
+	 * write window (or LBA 8 on read-only boots). Never send writes.
+	 */
+	data_lba = nvme_pci_write_window_active() && write_window.nsid == 1 ?
+		write_window.first : 8;
+	if (8192 / lbs > le64_to_cpu(id->nsze) ||
+	    data_lba >= le64_to_cpu(id->nsze) ||
+	    4096 / lbs > le64_to_cpu(id->nsze) - data_lba) {
+		ret = -ERANGE;
+		goto destroy;
+	}
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.rw.opcode = nvme_cmd_read;
+	cmd.rw.nsid = cpu_to_le32(1);
+	/* Both MBR and GPT header even with a native 4K logical block. */
+	cmd.rw.length = cpu_to_le16(8192 / lbs - 1);
+	ret = nvme_apple_ans_health_cmd(dev, q, &cmd, buffer, 8192, unhealthy);
+	if (!ret) {
+		cmd.rw.slba = cpu_to_le64(data_lba);
+		cmd.rw.length = cpu_to_le16(4096 / lbs - 1);
+		ret = nvme_apple_ans_health_cmd(dev, q, &cmd, buffer, 4096, unhealthy);
+	}
+destroy:
+	blk_mq_destroy_queue(q);
+	blk_put_queue(q);
+done:
+	clear_bit(ANS_HEALTH_ACTIVE, &dev->apple_ans_flags);
+free:
+	kfree(buffer);
+	kfree(id);
+report:
+	dev_info(dev->dev, "Apple ANS: health gate partition/data NSID 1 result %d (%s)\n",
+		 ret, !ret ? "passed" : *unhealthy ? "controller timeout" : "gate inconclusive");
+	return ret;
+}
+
 static enum blk_eh_timer_return nvme_timeout(struct request *req)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
@@ -1891,8 +2285,33 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 	struct request *abort_req;
 	struct nvme_command cmd = { };
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
-	u32 csts = readl(dev->bar + NVME_REG_CSTS);
+	u32 csts = ~0U;
 	u8 opcode;
+	bool ans = dev->dma_ops == &nvme_pci_apple_ans_ops;
+
+	if (ans) {
+		/* Log before the first potentially blocking non-posted BAR read. */
+		dev_warn(dev->dev, "Apple ANS: timeout tag %d cid %#x qid %u opcode %#x\n",
+			 req->tag, nvme_cid(req), nvmeq->qid,
+			 nvme_req(req)->cmd->common.opcode);
+		nvme_apple_ans_dump(dev, "timeout before CSTS");
+		if (test_bit(ANS_HEALTH_ACTIVE, &dev->apple_ans_flags)) {
+			/* Evidence reaches console/netconsole before teardown. No
+			 * endpoint read or nested admin deletion on a failed gate.
+			 */
+			pr_flush(1000, false);
+			set_bit(ANS_HEALTH_FAILED, &dev->apple_ans_flags);
+			pci_clear_master(pdev);
+			nvme_dev_disable(dev, false);
+			return BLK_EH_DONE;
+		}
+		if (dev->ctrl.ops->reg_read32(&dev->ctrl, NVME_REG_CSTS, &csts))
+			goto disable;
+		dev_warn(dev->dev, "Apple ANS: timeout CSTS %#x tag %d qid %u\n",
+			 csts, req->tag, nvmeq->qid);
+	} else {
+		csts = readl(dev->bar + NVME_REG_CSTS);
+	}
 
 	/*
 	 * Shutdown the device immediately if we see it is disconnected. This
@@ -1927,6 +2346,8 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 	 */
 	if (test_bit(NVMEQ_POLLED, &nvmeq->flags))
 		nvme_poll(req->mq_hctx, NULL);
+	else if (nvme_apple_ans_shared_vector(dev))
+		nvme_apple_ans_drain_vector(nvmeq, "timeout");
 	else
 		nvme_poll_irqdisable(nvmeq);
 
@@ -1966,6 +2387,20 @@ static enum blk_eh_timer_return nvme_timeout(struct request *req)
 	 * returned to the driver, or if this is the admin queue.
 	 */
 	opcode = nvme_req(req)->cmd->common.opcode;
+	if (ans && of_machine_is_compatible("apple,j71t")) {
+		/* Skip the generic abort/re-arm loop. One reset per device lifetime;
+		 * a second stalled request fails the disk instead of trapping mount.
+		 */
+		if (test_and_set_bit(0, &dev->apple_ans_flags)) {
+			dev_err(dev->dev, "Apple ANS: repeated timeout; disabling controller\n");
+			nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_DELETING);
+		} else {
+			dev_warn(dev->dev, "Apple ANS: first timeout; reset without admin abort\n");
+			if (apple_ans_boot_mode(dev->dev) != APPLE_ANS_ROUND7)
+				set_bit(ANS_RECOVERY_PENDING, &dev->apple_ans_flags);
+		}
+		goto disable;
+	}
 	if (!nvmeq->qid || (iod->flags & IOD_ABORTED)) {
 		dev_warn(dev->ctrl.device,
 			 "I/O tag %d (%04x) opcode %#x (%s) QID %d timeout, reset controller\n",
@@ -2406,6 +2841,12 @@ static int nvme_pci_configure_admin_queue(struct nvme_dev *dev)
 	lo_hi_writeq(nvmeq->sq_dma_addr, dev->bar + NVME_REG_ASQ);
 	lo_hi_writeq(nvmeq->cq_dma_addr, dev->bar + NVME_REG_ACQ);
 
+	if (dev->dma_ops && dev->dma_ops->prepare_enable) {
+		result = dev->dma_ops->prepare_enable(dev);
+		if (result)
+			return result;
+	}
+
 	result = nvme_enable_ctrl(&dev->ctrl);
 	if (result)
 		return result;
@@ -2824,6 +3265,48 @@ static ssize_t hmb_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RW(hmb);
 
+/* Host-only snapshots never cross PCIe. Endpoint mode is an explicit opt-in. */
+static ssize_t apple_ans_diag_store(struct device *device,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct nvme_dev *dev = to_nvme_dev(dev_get_drvdata(device));
+	bool endpoint = sysfs_streq(buf, "endpoint");
+	u32 csts;
+	int ret = 0;
+
+	if (!endpoint && !sysfs_streq(buf, "host"))
+		return -EINVAL;
+	if (dev->dma_ops != &nvme_pci_apple_ans_ops)
+		return -EOPNOTSUPP;
+	if (!mutex_trylock(&dev->shutdown_lock)) {
+		apple_ans_host_dump(dev->dev, "busy reset/shutdown");
+		return -EBUSY;
+	}
+	nvme_apple_ans_dump(dev, "rescue");
+	if (endpoint) {
+		if (!pci_is_enabled(to_pci_dev(dev->dev))) {
+			ret = -ENODEV;
+			goto out;
+		}
+		ret = dev->ctrl.ops->reg_read32(&dev->ctrl, NVME_REG_CSTS, &csts);
+		if (!ret) {
+			dev_info(dev->dev, "Apple ANS: endpoint CSTS %#x CC %#x AQA %#x ASQ %#llx ACQ %#llx HMB %#x:%08x/%#x INTMS %#x\n",
+				 csts, readl(dev->bar + NVME_REG_CC),
+				 readl(dev->bar + NVME_REG_AQA),
+				 lo_hi_readq(dev->bar + NVME_REG_ASQ),
+				 lo_hi_readq(dev->bar + NVME_REG_ACQ),
+				 readl(dev->bar + 0x1814), readl(dev->bar + 0x1810),
+				 readl(dev->bar + 0x1818), readl(dev->bar + NVME_REG_INTMS));
+			nvme_pci_apple_ans_log_msi(dev);
+		}
+	}
+out:
+	mutex_unlock(&dev->shutdown_lock);
+	return ret ?: count;
+}
+static DEVICE_ATTR_WO(apple_ans_diag);
+
 static umode_t nvme_pci_attrs_are_visible(struct kobject *kobj,
 		struct attribute *a, int n)
 {
@@ -2837,6 +3320,9 @@ static umode_t nvme_pci_attrs_are_visible(struct kobject *kobj,
 	    	if (!dev->cmbsz)
 			return 0;
 	}
+	if (a == &dev_attr_apple_ans_diag.attr &&
+	    dev->dma_ops != &nvme_pci_apple_ans_ops)
+		return 0;
 	if (a == &dev_attr_hmb.attr && !ctrl->hmpre)
 		return 0;
 
@@ -2848,6 +3334,7 @@ static struct attribute *nvme_pci_attrs[] = {
 	&dev_attr_cmbloc.attr,
 	&dev_attr_cmbsz.attr,
 	&dev_attr_hmb.attr,
+	&dev_attr_apple_ans_diag.attr,
 	NULL,
 };
 
@@ -3212,15 +3699,28 @@ static int nvme_pci_enable(struct nvme_dev *dev)
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	unsigned int flags = PCI_IRQ_ALL_TYPES;
 
+	/*
+	 * A host bridge cuts off a port whose link did not come back after
+	 * system sleep; a BAR read over it could stall the CPU.
+	 */
+	if (pci_dev_is_disconnected(pdev))
+		return -ENODEV;
+
 	if (pci_enable_device_mem(pdev))
 		return result;
 
-	pci_set_master(pdev);
+	if (dev->dma_ops != &nvme_pci_apple_ans_ops ||
+	    apple_ans_boot_mode(dev->dev) == APPLE_ANS_ROUND7)
+		pci_set_master(pdev);
 
-	if (readl(dev->bar + NVME_REG_CSTS) == -1) {
-		dev_dbg(dev->ctrl.device, "reading CSTS register failed\n");
-		result = -ENODEV;
-		goto disable;
+	{
+		u32 csts;
+
+		result = dev->ctrl.ops->reg_read32(&dev->ctrl, NVME_REG_CSTS, &csts);
+		if (result || csts == ~0U) {
+			result = result ?: -ENODEV;
+			goto disable;
+		}
 	}
 
 	/*
@@ -3271,8 +3771,17 @@ static int nvme_pci_enable(struct nvme_dev *dev)
 		dev_warn(dev->ctrl.device, "IO queue depth clamped to %d\n",
 			 dev->q_depth);
 	}
+	if (dev->dma_ops && dev->dma_ops->queue_depth)
+		dev->q_depth = dev->dma_ops->queue_depth(dev, dev->q_depth);
 	dev->ctrl.sqsize = dev->q_depth - 1; /* 0's based queue depth */
 
+	if (dev->dma_ops && dev->dma_ops->preinit) {
+		result = dev->dma_ops->preinit(dev);
+		if (result)
+			goto free_irq;
+	}
+
+	pci_set_master(pdev);
 	nvme_map_cmb(dev);
 
 	pci_save_state(pdev);
@@ -3301,23 +3810,40 @@ static bool nvme_pci_ctrl_is_dead(struct nvme_dev *dev)
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	u32 csts;
 
+	if (test_bit(ANS_HEALTH_FAILED, &dev->apple_ans_flags))
+		return true;
+
 	if (!pci_is_enabled(pdev) || !pci_device_is_present(pdev))
 		return true;
 	if (pdev->error_state != pci_channel_io_normal)
 		return true;
 
-	csts = readl(dev->bar + NVME_REG_CSTS);
+	if (dev->ctrl.ops->reg_read32(&dev->ctrl, NVME_REG_CSTS, &csts))
+		return true;
 	return (csts & NVME_CSTS_CFS) || !(csts & NVME_CSTS_RDY);
 }
 
-static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
+static int __nvme_dev_disable(struct nvme_dev *dev, bool shutdown,
+			      bool for_sleep)
 {
 	enum nvme_ctrl_state state = nvme_ctrl_state(&dev->ctrl);
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	bool dead;
+	int ret, sleep_ret = 0;
 
+	/* Before queues and IRQs go away; nvme_reset_work() restarts it. */
+	cancel_delayed_work_sync(&dev->ans_irq_rescue);
 	mutex_lock(&dev->shutdown_lock);
 	dead = nvme_pci_ctrl_is_dead(dev);
+	if (for_sleep && (dead || !dev->ctrl.queue_count)) {
+		dev_err(dev->dev, "Apple ANS: sleep refused: controller not live\n");
+		sleep_ret = -EBUSY;
+		goto unlock;
+	}
+	if (dead && shutdown && kexec_in_progress &&
+	    dev->dma_ops == &nvme_pci_apple_ans_ops &&
+	    apple_ans_boot_mode(dev->dev) != APPLE_ANS_ROUND7)
+		panic("Apple ANS: dead outgoing controller; refusing kexec");
 	if (state == NVME_CTRL_LIVE || state == NVME_CTRL_RESETTING) {
 		if (pci_is_enabled(pdev))
 			nvme_start_freeze(&dev->ctrl);
@@ -3325,15 +3851,54 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
 		 * Give the controller a chance to complete all entered requests
 		 * if doing a safe shutdown.
 		 */
-		if (!dead && shutdown)
-			nvme_wait_freeze_timeout(&dev->ctrl);
+		if (!dead && shutdown) {
+			ret = nvme_wait_freeze_timeout(&dev->ctrl);
+			if (ret <= 0 && for_sleep) {
+				dev_err(dev->dev, "Apple ANS: sleep I/O drain timeout\n");
+				nvme_unfreeze(&dev->ctrl);
+				sleep_ret = -EBUSY;
+				goto unlock;
+			}
+			if (ret <= 0 && kexec_in_progress &&
+			    dev->dma_ops == &nvme_pci_apple_ans_ops &&
+			    apple_ans_boot_mode(dev->dev) != APPLE_ANS_ROUND7)
+				panic("Apple ANS: outgoing I/O did not drain; refusing kexec");
+		}
 	}
 
 	nvme_quiesce_io_queues(&dev->ctrl);
 
 	if (!dead && dev->ctrl.queue_count > 0) {
+		if (for_sleep || (shutdown && kexec_in_progress &&
+				  dev->dma_ops == &nvme_pci_apple_ans_ops &&
+				  apple_ans_boot_mode(dev->dev) != APPLE_ANS_ROUND7)) {
+			nvme_sync_io_queues(&dev->ctrl);
+			ret = apple_ans_nvmmu_drain(dev->dev);
+			if (ret) {
+				nvme_apple_ans_dump(dev, "outgoing drain failed");
+				if (for_sleep) {
+					dev_err(dev->dev, "Apple ANS: sleep NVMMU drain failed %d\n",
+						ret);
+					nvme_unquiesce_io_queues(&dev->ctrl);
+					nvme_unfreeze(&dev->ctrl);
+					sleep_ret = -EBUSY;
+					goto unlock;
+				}
+				panic("Apple ANS: outgoing drain failed %d; refusing kexec", ret);
+			}
+		}
 		nvme_delete_io_queues(dev);
-		nvme_disable_ctrl(&dev->ctrl, shutdown);
+		if (shutdown && kexec_in_progress && dev->dma_ops &&
+		    dev->dma_ops->shutdown)
+			dev_info(dev->dev, "Apple ANS: kexec shutdown: starting NVMe SHN\n");
+		if (for_sleep)
+			dev_info(dev->dev, "Apple ANS: sleep shutdown: starting NVMe SHN\n");
+		ret = nvme_disable_ctrl(&dev->ctrl, shutdown);
+		if (for_sleep)
+			sleep_ret = dev->dma_ops->stop_for_sleep(dev, ret);
+		if (shutdown && kexec_in_progress && dev->dma_ops &&
+		    dev->dma_ops->shutdown)
+			dev->dma_ops->shutdown(dev, ret);
 		nvme_poll_irqdisable(&dev->queues[0]);
 	}
 	nvme_suspend_io_queues(dev);
@@ -3356,7 +3921,14 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
 		if (dev->ctrl.admin_q && !blk_queue_dying(dev->ctrl.admin_q))
 			nvme_unquiesce_admin_queue(&dev->ctrl);
 	}
+unlock:
 	mutex_unlock(&dev->shutdown_lock);
+	return sleep_ret;
+}
+
+static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
+{
+	__nvme_dev_disable(dev, shutdown, false);
 }
 
 static int nvme_disable_prepare_reset(struct nvme_dev *dev, bool shutdown)
@@ -3393,9 +3965,24 @@ static void nvme_pci_free_ctrl(struct nvme_ctrl *ctrl)
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
 
 	nvme_free_tagset(dev);
+	if (dev->dma_ops && dev->dma_ops->exit)
+		dev->dma_ops->exit(dev);
 	put_device(dev->dev);
 	kfree(dev->queues);
 	kfree(dev);
+}
+
+static bool nvme_apple_ans_retry(struct nvme_dev *dev)
+{
+	if (dev->dma_ops != &nvme_pci_apple_ans_ops ||
+	    apple_ans_boot_mode(dev->dev) == APPLE_ANS_ROUND7 ||
+	    nvme_state_terminal(&dev->ctrl) ||
+	    test_and_set_bit(ANS_RECOVERY_USED, &dev->apple_ans_flags))
+		return false;
+	nvme_apple_ans_dump(dev, "health/enable failed before recovery");
+	pr_flush(1000, false);
+	set_bit(ANS_RECOVERY_PENDING, &dev->apple_ans_flags);
+	return true;
 }
 
 static void nvme_reset_work(struct work_struct *work)
@@ -3403,6 +3990,7 @@ static void nvme_reset_work(struct work_struct *work)
 	struct nvme_dev *dev =
 		container_of(work, struct nvme_dev, ctrl.reset_work);
 	bool was_suspend = !!(dev->ctrl.ctrl_config & NVME_CC_SHN_NORMAL);
+	bool unhealthy;
 	int result;
 
 	if (nvme_ctrl_state(&dev->ctrl) != NVME_CTRL_RESETTING) {
@@ -3412,6 +4000,7 @@ static void nvme_reset_work(struct work_struct *work)
 		goto out;
 	}
 
+retry:
 	/*
 	 * If we're called to reset a live controller first shut it down before
 	 * moving on.
@@ -3419,11 +4008,25 @@ static void nvme_reset_work(struct work_struct *work)
 	if (dev->ctrl.ctrl_config & NVME_CC_ENABLE)
 		nvme_dev_disable(dev, false);
 	nvme_sync_queues(&dev->ctrl);
+	if (test_and_clear_bit(ANS_RECOVERY_PENDING, &dev->apple_ans_flags)) {
+		pci_clear_master(to_pci_dev(dev->dev));
+		result = nvme_pci_apple_ans_recover(dev);
+		if (result)
+			goto out;
+		clear_bit(ANS_HEALTH_FAILED, &dev->apple_ans_flags);
+	}
 
 	mutex_lock(&dev->shutdown_lock);
 	result = nvme_pci_enable(dev);
 	if (result)
 		goto out_unlock;
+	if (!dev->ctrl.admin_q) {
+		/* First enable, deferred from nvme_probe() (Apple ANS) */
+		result = nvme_alloc_admin_tag_set(&dev->ctrl, &dev->admin_tagset,
+				&nvme_mq_admin_ops, sizeof(struct nvme_iod));
+		if (result)
+			goto out_unlock;
+	}
 	nvme_unquiesce_admin_queue(&dev->ctrl);
 	mutex_unlock(&dev->shutdown_lock);
 
@@ -3431,7 +4034,8 @@ static void nvme_reset_work(struct work_struct *work)
 	 * Introduce CONNECTING state from nvme-fc/rdma transports to mark the
 	 * initializing procedure here.
 	 */
-	if (!nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_CONNECTING)) {
+	if (nvme_ctrl_state(&dev->ctrl) != NVME_CTRL_CONNECTING &&
+	    !nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_CONNECTING)) {
 		dev_warn(dev->ctrl.device,
 			"failed to mark controller CONNECTING\n");
 		result = -EBUSY;
@@ -3441,6 +4045,7 @@ static void nvme_reset_work(struct work_struct *work)
 	result = nvme_init_ctrl_finish(&dev->ctrl, was_suspend);
 	if (result)
 		goto out;
+	nvme_pci_write_window_limits(dev);
 
 	if (nvme_ctrl_meta_sgl_supported(&dev->ctrl))
 		dev->ctrl.max_integrity_segments = NVME_MAX_META_SEGS;
@@ -3467,7 +4072,15 @@ static void nvme_reset_work(struct work_struct *work)
 	if (dev->online_queues > 1) {
 		nvme_dbbuf_set(dev);
 		nvme_unquiesce_io_queues(&dev->ctrl);
-		nvme_wait_freeze(&dev->ctrl);
+		if (dev->dma_ops == &nvme_pci_apple_ans_ops &&
+		    apple_ans_boot_mode(dev->dev) != APPLE_ANS_ROUND7) {
+			if (nvme_wait_freeze_timeout(&dev->ctrl) <= 0) {
+				result = -ETIMEDOUT;
+				goto out;
+			}
+		} else {
+			nvme_wait_freeze(&dev->ctrl);
+		}
 		if (!nvme_pci_update_nr_queues(dev))
 			goto out;
 		nvme_unfreeze(&dev->ctrl);
@@ -3477,6 +4090,16 @@ static void nvme_reset_work(struct work_struct *work)
 		nvme_unquiesce_io_queues(&dev->ctrl);
 		nvme_remove_namespaces(&dev->ctrl);
 		nvme_free_tagset(dev);
+	}
+
+	if (dev->dma_ops == &nvme_pci_apple_ans_ops &&
+	    apple_ans_boot_mode(dev->dev) != APPLE_ANS_ROUND7) {
+		result = nvme_apple_ans_health(dev, &unhealthy);
+		if (result && unhealthy)
+			goto out;
+		if (result)
+			dev_warn(dev->dev, "Apple ANS: health gate inconclusive (%d); continuing namespace discovery without recovery\n",
+				 result);
 	}
 
 	/*
@@ -3491,11 +4114,17 @@ static void nvme_reset_work(struct work_struct *work)
 	}
 
 	nvme_start_ctrl(&dev->ctrl);
+	nvme_apple_ans_irq_rescue_start(dev);
 	return;
 
  out_unlock:
 	mutex_unlock(&dev->shutdown_lock);
  out:
+	if (nvme_apple_ans_retry(dev)) {
+		dev_warn(dev->dev, "Apple ANS: controller/admin/health bring-up failed %d; one full controller+port retry before namespace publication\n",
+			 result);
+		goto retry;
+	}
 	/*
 	 * Set state to deleting now to avoid blocking nvme_wait_reset(), which
 	 * may be holding this pci_dev's device lock.
@@ -3512,14 +4141,33 @@ static void nvme_reset_work(struct work_struct *work)
 
 static int nvme_pci_reg_read32(struct nvme_ctrl *ctrl, u32 off, u32 *val)
 {
-	*val = readl(to_nvme_dev(ctrl)->bar + off);
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+
+	if (off == NVME_REG_CSTS && dev->dma_ops && dev->dma_ops->read_csts)
+		return dev->dma_ops->read_csts(dev, val);
+	*val = readl(dev->bar + off);
 	return 0;
 }
 
 static int nvme_pci_reg_write32(struct nvme_ctrl *ctrl, u32 off, u32 val)
 {
-	writel(val, to_nvme_dev(ctrl)->bar + off);
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+
+	if (off == NVME_REG_CC && dev->dma_ops && dev->dma_ops->write_cc)
+		return dev->dma_ops->write_cc(dev, val);
+	writel(val, dev->bar + off);
 	return 0;
+}
+
+static bool nvme_pci_ns_is_readonly(struct nvme_ctrl *ctrl, u32 nsid)
+{
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+
+	/* NVME_CTRL_FORCE_RO is off with a write window: only its NSID is rw */
+	if (nvme_pci_write_window_active() && nsid != write_window.nsid)
+		return true;
+	return dev->dma_ops && dev->dma_ops->ns_readonly &&
+	       dev->dma_ops->ns_readonly(dev, nsid);
 }
 
 static int nvme_pci_reg_read64(struct nvme_ctrl *ctrl, u32 off, u64 *val)
@@ -3579,6 +4227,7 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 	.print_device_info	= nvme_pci_print_device_info,
 	.supports_pci_p2pdma	= nvme_pci_supports_pci_p2pdma,
 	.get_virt_boundary	= nvme_pci_get_virt_boundary,
+	.ns_is_readonly		= nvme_pci_ns_is_readonly,
 };
 
 static int nvme_dev_map(struct nvme_dev *dev)
@@ -3700,6 +4349,7 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 	if (!dev)
 		return ERR_PTR(-ENOMEM);
 	INIT_WORK(&dev->ctrl.reset_work, nvme_reset_work);
+	INIT_DELAYED_WORK(&dev->ans_irq_rescue, nvme_apple_ans_irq_rescue_work);
 	mutex_init(&dev->shutdown_lock);
 
 	dev->nr_write_queues = write_queues;
@@ -3729,10 +4379,33 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 		quirks |= qentry->enabled_quirks;
 		quirks &= ~qentry->disabled_quirks;
 	}
+	if (nvme_pci_apple_ans_match(pdev)) {
+		dev->dma_ops = &nvme_pci_apple_ans_ops;
+		quirks |= NVME_QUIRK_SINGLE_VECTOR | NVME_QUIRK_SHARED_TAGS;
+	}
+	if (dev->dma_ops) {
+		ret = dev->dma_ops->init(dev, node);
+		if (ret)
+			goto out_put_device;
+	}
 	ret = nvme_init_ctrl(&dev->ctrl, &pdev->dev, &nvme_pci_ctrl_ops,
 			     quirks);
 	if (ret)
 		goto out_put_device;
+
+	if (IS_ENABLED(CONFIG_NVME_PCI_READ_ONLY) &&
+	    nvme_pci_write_window_active()) {
+		/* Namespaces other than the window's: nvme_pci_ns_is_readonly() */
+		dev->ctrl.quirks |= NVME_QUIRK_DISABLE_WRITE_ZEROES;
+		dev_warn(&pdev->dev,
+			 "read-only except NVMe Write to NSID %u LBAs %llu-%llu (nvme.write_window): no trim, no write zeroes, no destructive admin commands\n",
+			 write_window.nsid, write_window.first,
+			 write_window.last);
+	} else if (IS_ENABLED(CONFIG_NVME_PCI_READ_ONLY)) {
+		set_bit(NVME_CTRL_FORCE_RO, &dev->ctrl.flags);
+		dev_info(&pdev->dev,
+			 "read-only: media writes and destructive admin commands are refused (CONFIG_NVME_PCI_READ_ONLY)\n");
+	}
 
 	if (dev->ctrl.quirks & NVME_QUIRK_DMA_ADDRESS_BITS_48)
 		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(48));
@@ -3748,11 +4421,17 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 	dev->ctrl.max_hw_sectors = min_t(u32,
 			NVME_MAX_BYTES >> SECTOR_SHIFT,
 			dma_opt_mapping_size(&pdev->dev) >> 9);
+	if (dev->dma_ops && dev->dma_ops->max_hw_sectors)
+		dev->ctrl.max_hw_sectors =
+			dev->dma_ops->max_hw_sectors(dev,
+						     dev->ctrl.max_hw_sectors);
 	dev->ctrl.max_segments = NVME_MAX_SEGS;
 	dev->ctrl.max_integrity_segments = 1;
 	return dev;
 
 out_put_device:
+	if (dev->dma_ops && dev->dma_ops->exit)
+		dev->dma_ops->exit(dev);
 	put_device(dev->dev);
 	kfree(dev->queues);
 out_free_dev:
@@ -3764,6 +4443,10 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct nvme_dev *dev;
 	int result = -ENOMEM;
+
+	if (!nvme_pci_apple_ans_probe_allowed(pdev))
+		return dev_err_probe(&pdev->dev, -EPROBE_DEFER,
+			"Apple ANS: held for initramfs USB diagnostics\n");
 
 	dev = nvme_pci_alloc_dev(pdev, id);
 	if (IS_ERR(dev))
@@ -3782,6 +4465,26 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out_dev_unmap;
 
 	dev_info(dev->ctrl.device, "pci function %s\n", dev_name(&pdev->dev));
+
+	/*
+	 * Apple ANS: do the first enable from reset_work on nvme_reset_wq, like
+	 * nvme-pci did before it went synchronous. The probe itself runs in the
+	 * async domain that kernel_init() waits for before starting /init, so a
+	 * bring-up that hangs or times out (CAP.TO can be minutes) would
+	 * otherwise keep the shell from ever coming up.
+	 */
+	if (dev->dma_ops == &nvme_pci_apple_ans_ops) {
+		if (!nvme_change_ctrl_state(&dev->ctrl, NVME_CTRL_RESETTING)) {
+			result = -EBUSY;
+			goto out_release_iod_mempool;
+		}
+		pci_set_drvdata(pdev, dev);
+		dev_info(dev->ctrl.device,
+			 "Apple ANS: controller bring-up continues in the background\n");
+		queue_work(nvme_reset_wq, &dev->ctrl.reset_work);
+		nvme_put_ctrl(&dev->ctrl);
+		return 0;
+	}
 
 	result = nvme_pci_enable(dev);
 	if (result)
@@ -3806,6 +4509,7 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	result = nvme_init_ctrl_finish(&dev->ctrl, false);
 	if (result)
 		goto out_disable;
+	nvme_pci_write_window_limits(dev);
 
 	if (nvme_ctrl_meta_sgl_supported(&dev->ctrl))
 		dev->ctrl.max_integrity_segments = NVME_MAX_META_SEGS;
@@ -3843,6 +4547,7 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pci_set_drvdata(pdev, dev);
 
 	nvme_start_ctrl(&dev->ctrl);
+	nvme_apple_ans_irq_rescue_start(dev);
 	nvme_put_ctrl(&dev->ctrl);
 	flush_work(&dev->ctrl.scan_work);
 	return 0;
@@ -3953,6 +4658,32 @@ reset:
 	return nvme_try_sched_reset(ctrl);
 }
 
+/* An error must abort PM and restart this device: PM will not resume a
+ * device whose own suspend callback failed. Never wait indefinitely for a
+ * reset already in progress just to start sleeping.
+ */
+static int nvme_apple_ans_suspend(struct nvme_dev *ndev)
+{
+	int ret;
+
+	ret = apple_ans_set_sleep_stopped(ndev->dev, false);
+	if (ret)
+		return ret;
+	if (nvme_ctrl_state(&ndev->ctrl) != NVME_CTRL_LIVE ||
+	    !nvme_change_ctrl_state(&ndev->ctrl, NVME_CTRL_RESETTING))
+		return -EBUSY;
+	ret = __nvme_dev_disable(ndev, true, true);
+	if (ret) {
+		dev_err(ndev->dev, "Apple ANS: sleep refused %d; scheduling controller restore\n",
+			ret);
+		if (nvme_try_sched_reset(&ndev->ctrl))
+			dev_err(ndev->dev, "Apple ANS: sleep abort restore could not be queued\n");
+		return -EBUSY;
+	}
+	dev_info(ndev->dev, "Apple ANS: sleep stop certified; host may power port down\n");
+	return 0;
+}
+
 static int nvme_suspend(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -3961,6 +4692,9 @@ static int nvme_suspend(struct device *dev)
 	int ret = -EBUSY;
 
 	ndev->last_ps = U32_MAX;
+	if (of_machine_is_compatible("apple,j71t") &&
+	    ndev->dma_ops && ndev->dma_ops->stop_for_sleep)
+		return nvme_apple_ans_suspend(ndev);
 
 	/*
 	 * The platform does not remove power for a kernel managed suspend so
@@ -4295,6 +5029,9 @@ static const struct pci_device_id nvme_id_table[] = {
 		 */
 		.driver_data = NVME_QUIRK_SINGLE_VECTOR |
 				NVME_QUIRK_QDEPTH_ONE },
+	{ PCI_DEVICE(PCI_VENDOR_ID_APPLE, PCI_DEVICE_ID_APPLE_ANS_NVME),
+		.driver_data = NVME_QUIRK_SINGLE_VECTOR |
+				NVME_QUIRK_SHARED_TAGS },
 	{ PCI_DEVICE(PCI_VENDOR_ID_APPLE, 0x2003) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_APPLE, 0x2005),
 		.driver_data = NVME_QUIRK_SINGLE_VECTOR |

@@ -336,6 +336,7 @@ enum nvme_ctrl_flags {
 	NVME_CTRL_SKIP_ID_CNS_CS	= 4,
 	NVME_CTRL_DIRTY_CAPABILITY	= 5,
 	NVME_CTRL_FROZEN		= 6,
+	NVME_CTRL_FORCE_RO		= 7,
 };
 
 struct nvme_ctrl {
@@ -666,6 +667,8 @@ struct nvme_ctrl_ops {
 	void (*print_device_info)(struct nvme_ctrl *ctrl);
 	bool (*supports_pci_p2pdma)(struct nvme_ctrl *ctrl);
 	unsigned long (*get_virt_boundary)(struct nvme_ctrl *ctrl, bool is_admin);
+	/* Optional: transport-forced read-only namespaces */
+	bool (*ns_is_readonly)(struct nvme_ctrl *ctrl, u32 nsid);
 };
 
 /*

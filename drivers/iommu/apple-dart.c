@@ -11,6 +11,7 @@
  *  Copyright (c) 2011,2016 Samsung Electronics Co., Ltd.
  */
 
+#include <linux/apple-ans.h>
 #include <linux/atomic.h>
 #include <linux/bitfield.h>
 #include <linux/clk.h>
@@ -22,6 +23,7 @@
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/minmax.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -29,6 +31,7 @@
 #include <linux/of_platform.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/ratelimit.h>
 #include <linux/slab.h>
 #include <linux/swab.h>
 #include <linux/types.h>
@@ -66,6 +69,16 @@
 #define DART_S5L8960X_TCR_BITS_PER_STREAM	8
 
 #define DART_S5L8960X_TTBR	0x40
+
+/*
+ * Written by iOS (AppleS5L8960XDART) at every hardware init, from the ADT
+ * properties of the same names: the error reflector is the page that
+ * faulting transactions are redirected to, so they complete instead of
+ * stalling the requester.
+ */
+#define DART_S5L8960X_DIAG_CONFIG	0x20
+#define DART_S5L8960X_ERROR_REFLECTOR	0x24
+#define DART_S5L8960X_FETCH_CONFIG	0x30
 
 /* T8020/T6000 registers */
 
@@ -215,11 +228,24 @@ struct apple_dart {
 	u32 supports_bypass : 1;
 	u32 four_level : 1;
 
+	struct ratelimit_state fault_rs;
+
+	/* IOVA window for 1-cell masters (apple,dma-range), default: all of ias */
+	dma_addr_t dma_min;
+	dma_addr_t dma_max;
+
 	struct iommu_group *sid2group[DART_MAX_STREAMS];
 	struct iommu_device iommu;
 
 	u32 save_tcr[DART_MAX_STREAMS];
 	u32 save_ttbr[DART_MAX_STREAMS][DART_MAX_TTBR];
+
+	/* S5L8960X: apple,error-reflector >> 12 (0 = leave alone), configs */
+	u32 error_reflector;
+	u32 fetch_config;
+	u32 diag_config;
+	u32 has_fetch_config : 1;
+	u32 has_diag_config : 1;
 };
 
 struct apple_dart_hw {
@@ -291,6 +317,7 @@ struct apple_dart_domain {
 	struct io_pgtable_ops *pgtbl_ops;
 
 	bool finalized;
+	int flush_error; /* a failed invalidate blocks DMA until stopped reinit */
 	u64 mask;
 	struct mutex init_lock;
 	struct apple_dart_atomic_stream_map stream_maps[MAX_DARTS_PER_DEVICE];
@@ -368,10 +395,12 @@ static u32 apple_dart_s5l8960x_read_tcr(struct apple_dart *dart, u32 sid)
 static void apple_dart_s5l8960x_write_tcr(struct apple_dart *dart, u32 sid, u32 val)
 {
 	WARN_ON(sid >= 4);
+	u32 shift = sid * DART_S5L8960X_TCR_BITS_PER_STREAM;
 	u32 tcr = readl(dart->regs + dart->hw->tcr);
 
-	tcr &= 0xff << (sid * DART_S5L8960X_TCR_BITS_PER_STREAM);
-	tcr |= val;
+	/* One byte per stream: replace this stream's byte, keep the others */
+	tcr &= ~(0xff << shift);
+	tcr |= (val & 0xff) << shift;
 	writel(tcr, dart->regs + dart->hw->tcr);
 }
 
@@ -559,6 +588,39 @@ apple_dart_t8110_hw_invalidate_tlb(struct apple_dart_stream_map *stream_map)
 		stream_map, DART_T8110_TLB_CMD_OP_FLUSH_SID);
 }
 
+static void apple_dart_s5l8960x_hw_config(struct apple_dart *dart)
+{
+	if (dart->error_reflector)
+		writel(dart->error_reflector,
+		       dart->regs + DART_S5L8960X_ERROR_REFLECTOR);
+	if (dart->has_fetch_config)
+		writel(dart->fetch_config,
+		       dart->regs + DART_S5L8960X_FETCH_CONFIG);
+	if (dart->has_diag_config)
+		writel(dart->diag_config,
+		       dart->regs + DART_S5L8960X_DIAG_CONFIG);
+}
+
+/* Snapshot before any W1C or table replacement. 0x100/0x500 have no
+ * exception-valid bit; direction/attributes alone do not indicate a fault.
+ */
+static void apple_dart_s5l8960x_log_state(struct apple_dart *dart,
+					  const char *when)
+{
+	u32 error = readl(dart->regs + DART_S5L8960X_ERROR);
+	u32 sid = FIELD_GET(DART_S5L8960X_ERROR_STREAM, error);
+
+	dev_info(dart->dev,
+		 "DART %s before ack: err %#x valid %u code %#x sid %u write %u addr %#x TCR %#x TTBR %#x %#x %#x %#x\n",
+		 when, error, !!(error & BIT(31)), error & 0x7f, sid,
+		 !!(error & BIT(10)), readl(dart->regs + DART_S5L8960X_ERROR_ADDR),
+		 readl(dart->regs + DART_S5L8960X_TCR),
+		 readl(dart->regs + DART_TTBR(dart, sid, 0)),
+		 readl(dart->regs + DART_TTBR(dart, sid, 1)),
+		 readl(dart->regs + DART_TTBR(dart, sid, 2)),
+		 readl(dart->regs + DART_TTBR(dart, sid, 3)));
+}
+
 static int apple_dart_hw_reset(struct apple_dart *dart)
 {
 	u32 config;
@@ -572,6 +634,8 @@ static int apple_dart_hw_reset(struct apple_dart *dart)
 		return -EINVAL;
 	}
 
+	if (dart->hw->type == DART_S5L8960X)
+		apple_dart_s5l8960x_log_state(dart, "hw_reset");
 	stream_map.dart = dart;
 	bitmap_zero(stream_map.sidmap, DART_MAX_STREAMS);
 	bitmap_set(stream_map.sidmap, 0, dart->num_streams);
@@ -593,15 +657,17 @@ static int apple_dart_hw_reset(struct apple_dart *dart)
 	 * S5L8960X DART only supports TLB invalidation if translation is
 	 * enabled.
 	 */
-	if (dart->hw->type == DART_S5L8960X)
+	if (dart->hw->type == DART_S5L8960X) {
+		apple_dart_s5l8960x_hw_config(dart);
 		return 0;
+	}
 
 	return dart->hw->invalidate_tlb(&stream_map);
 }
 
-static void apple_dart_domain_flush_tlb(struct apple_dart_domain *domain)
+static int apple_dart_domain_flush_tlb(struct apple_dart_domain *domain)
 {
-	int i, j;
+	int i, j, ret, error = 0;
 	struct apple_dart_atomic_stream_map *domain_stream_map;
 	struct apple_dart_stream_map stream_map;
 
@@ -611,8 +677,17 @@ static void apple_dart_domain_flush_tlb(struct apple_dart_domain *domain)
 		for (j = 0; j < BITS_TO_LONGS(stream_map.dart->num_streams); j++)
 			stream_map.sidmap[j] = atomic_long_read(&domain_stream_map->sidmap[j]);
 
-		stream_map.dart->hw->invalidate_tlb(&stream_map);
+		ret = stream_map.dart->hw->invalidate_tlb(&stream_map);
+		if (ret) {
+			if (!READ_ONCE(domain->flush_error))
+				dev_err(stream_map.dart->dev,
+					"DART domain flush failed %d; blocking DMA\n", ret);
+			WRITE_ONCE(domain->flush_error, ret);
+			error = ret;
+			apple_dart_hw_disable_dma(&stream_map);
+		}
 	}
+	return error ?: READ_ONCE(domain->flush_error);
 }
 
 static void apple_dart_flush_iotlb_all(struct iommu_domain *domain)
@@ -629,8 +704,7 @@ static void apple_dart_iotlb_sync(struct iommu_domain *domain,
 static int apple_dart_iotlb_sync_map(struct iommu_domain *domain,
 				     unsigned long iova, size_t size)
 {
-	apple_dart_domain_flush_tlb(to_dart_domain(domain));
-	return 0;
+	return apple_dart_domain_flush_tlb(to_dart_domain(domain));
 }
 
 static phys_addr_t apple_dart_iova_to_phys(struct iommu_domain *domain,
@@ -655,6 +729,8 @@ static int apple_dart_map_pages(struct iommu_domain *domain, unsigned long iova,
 
 	if (!ops)
 		return -ENODEV;
+	if (READ_ONCE(dart_domain->flush_error))
+		return READ_ONCE(dart_domain->flush_error);
 
 	return ops->map_pages(ops, iova & dart_domain->mask, paddr, pgsize,
 			      pgcount, prot, gfp, mapped);
@@ -672,24 +748,123 @@ static size_t apple_dart_unmap_pages(struct iommu_domain *domain,
 				gather);
 }
 
-static void
+static void apple_dart_s5l8960x_attach_config(struct apple_dart *dart)
+{
+	u32 error;
+
+	apple_dart_s5l8960x_log_state(dart, "attach/reinit");
+	error = readl(dart->regs + DART_S5L8960X_ERROR);
+	writel(error, dart->regs + DART_S5L8960X_ERROR);
+}
+
+static int
 apple_dart_setup_translation(struct apple_dart_domain *domain,
 			     struct apple_dart_stream_map *stream_map)
 {
-	int i;
-	struct io_pgtable_cfg *pgtbl_cfg =
+	struct apple_dart *dart = stream_map->dart;
+	struct io_pgtable_cfg *cfg =
 		&io_pgtable_ops_to_pgtable(domain->pgtbl_ops)->cfg;
+	bool s5l = dart->hw->type == DART_S5L8960X;
+	u32 expected, actual;
+	int i, sid, ret;
 
-	for (i = 0; i < pgtbl_cfg->apple_dart_cfg.n_ttbrs; ++i)
-		apple_dart_hw_set_ttbr(stream_map, i,
-				       pgtbl_cfg->apple_dart_cfg.ttbr[i]);
-	for (; i < stream_map->dart->hw->ttbr_count; ++i)
+	if (s5l) {
+		apple_dart_s5l8960x_attach_config(dart);
+		apple_dart_hw_disable_dma(stream_map);
+		for_each_set_bit(sid, stream_map->sidmap, dart->num_streams) {
+			if (dart->hw->read_tcr(dart, sid)) {
+				ret = -EIO;
+				goto fail;
+			}
+		}
+		apple_dart_hw_clear_all_ttbrs(stream_map);
+		/* Apple's init: reflector, stream tables, verified TCR, fetch,
+		 * diag. The DART cannot invalidate while TCR is disabled.
+		 */
+		if (dart->error_reflector)
+			writel(dart->error_reflector,
+			       dart->regs + DART_S5L8960X_ERROR_REFLECTOR);
+	}
+	for (i = 0; i < cfg->apple_dart_cfg.n_ttbrs; i++)
+		apple_dart_hw_set_ttbr(stream_map, i, cfg->apple_dart_cfg.ttbr[i]);
+	for (; i < dart->hw->ttbr_count; i++)
 		apple_dart_hw_clear_ttbr(stream_map, i);
 
-	apple_dart_hw_enable_translation(stream_map,
-					 pgtbl_cfg->apple_dart_cfg.n_levels);
-	stream_map->dart->hw->invalidate_tlb(stream_map);
+	dma_wmb();
+	apple_dart_hw_enable_translation(stream_map, cfg->apple_dart_cfg.n_levels);
+	if (s5l) {
+		for_each_set_bit(sid, stream_map->sidmap, dart->num_streams) {
+			/* Only selected stream bytes: SID 0 expects 0x80, not
+			 * 0x80808080 (which would enable unowned streams).
+			 */
+			if (dart->hw->read_tcr(dart, sid) != 0x80) {
+				ret = -EIO;
+				goto fail;
+			}
+		}
+		if (dart->has_fetch_config)
+			writel(dart->fetch_config, dart->regs + DART_S5L8960X_FETCH_CONFIG);
+		if (dart->has_diag_config)
+			writel(dart->diag_config, dart->regs + DART_S5L8960X_DIAG_CONFIG);
+	}
+	ret = dart->hw->invalidate_tlb(stream_map);
+	if (ret)
+		goto fail;
+	if (s5l) {
+		for_each_set_bit(sid, stream_map->sidmap, dart->num_streams) {
+			for (i = 0; i < dart->hw->ttbr_count; i++) {
+				expected = i < cfg->apple_dart_cfg.n_ttbrs ?
+					BIT(31) | (cfg->apple_dart_cfg.ttbr[i] >> 12) : 0;
+				actual = readl(dart->regs + DART_TTBR(dart, sid, i));
+				if (actual != expected || dart->hw->read_tcr(dart, sid) != 0x80) {
+					ret = -EIO;
+					goto fail;
+				}
+			}
+		}
+		dev_info(dart->dev, "DART checked reinit: TCR/TTBR readback and stream flush complete\n");
+	}
+	return 0;
+fail:
+	WRITE_ONCE(domain->flush_error, ret);
+	apple_dart_hw_disable_dma(stream_map);
+	dev_err(dart->dev, "DART reinit/flush failed %d; translation blocked\n", ret);
+	return ret;
 }
+
+/* Called only by the j71t ANS driver with DMA stopped. Use the domain's
+ * actual TTBRs, never a global reset or the diagnostic mapping of the DART.
+ */
+int apple_ans_dart_set_active(struct device *dev, bool active)
+{
+	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
+	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dev);
+	struct apple_dart_stream_map *map;
+	struct apple_dart_domain *d;
+	int i, ret;
+
+	if (!of_machine_is_compatible("apple,j71t") || !domain || !cfg ||
+	    !cfg->stream_maps[0].dart ||
+	    (domain->type != IOMMU_DOMAIN_DMA && domain->type != IOMMU_DOMAIN_DMA_FQ))
+		return -ENODEV;
+	d = to_dart_domain(domain);
+	for_each_stream_map(i, cfg, map) {
+		if (map->dart->hw->type != DART_S5L8960X)
+			return -EOPNOTSUPP;
+		if (!active) {
+			apple_dart_hw_disable_dma(map);
+			continue;
+		}
+		ret = apple_dart_setup_translation(d, map);
+		if (ret)
+			return ret;
+	}
+	if (active)
+		WRITE_ONCE(d->flush_error, 0);
+	dev_info(dev, "Apple ANS: DART force_active(%u) complete\n", active);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(apple_ans_dart_set_active);
 
 static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 				      struct apple_dart_master_cfg *cfg)
@@ -722,6 +897,8 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 		.coherent_walk = 1,
 		.iommu_dev = dart->dev,
 	};
+	if (dart->hw->type == DART_S5L8960X)
+		pgtbl_cfg.quirks |= IO_PGTABLE_QUIRK_APPLE_DART_S5L8960X;
 
 	dart_domain->pgtbl_ops = alloc_io_pgtable_ops(dart->hw->fmt, &pgtbl_cfg,
 						      &dart_domain->domain);
@@ -730,10 +907,28 @@ static int apple_dart_finalize_domain(struct apple_dart_domain *dart_domain,
 		goto done;
 	}
 
-	if (dart->hw->type == DART_S5L8960X)
+	/*
+	 * S5L8960X sees IOVAs relative to the window base: behind the A9 PCIe
+	 * root complex, IOVA 0xbbffe000 (window 0x80000000) reaches the DART as
+	 * 0x3bffe000 (device log, 2026-10-22). Index the tables the same way.
+	 * Masking the base off equals subtracting it only if the base is
+	 * aligned beyond the window size.
+	 */
+	if (dart->hw->type == DART_S5L8960X) {
+		if (cfg->dma_min &&
+		    cfg->dma_max - cfg->dma_min >= (cfg->dma_min & -cfg->dma_min)) {
+			dev_err(dart->dev,
+				"DMA window %pad..%pad is not base-aligned\n",
+				&cfg->dma_min, &cfg->dma_max);
+			free_io_pgtable_ops(dart_domain->pgtbl_ops);
+			dart_domain->pgtbl_ops = NULL;
+			ret = -EINVAL;
+			goto done;
+		}
 		dart_domain->mask = ~cfg->dma_min;
-	else
+	} else {
 		dart_domain->mask = DMA_BIT_MASK(pgtbl_cfg.ias);
+	}
 
 	dart_domain->domain.pgsize_bitmap = pgtbl_cfg.pgsize_bitmap;
 	dart_domain->domain.geometry.aperture_start = cfg->dma_min;
@@ -799,8 +994,11 @@ static int apple_dart_attach_dev_paging(struct iommu_domain *domain,
 	if (ret)
 		return ret;
 
-	for_each_stream_map(i, cfg, stream_map)
-		apple_dart_setup_translation(dart_domain, stream_map);
+	for_each_stream_map(i, cfg, stream_map) {
+		ret = apple_dart_setup_translation(dart_domain, stream_map);
+		if (ret)
+			return ret;
+	}
 	return 0;
 }
 
@@ -914,8 +1112,8 @@ static int apple_dart_of_xlate(struct device *dev,
 	struct platform_device *iommu_pdev = of_find_device_by_node(args->np);
 	struct apple_dart *dart = platform_get_drvdata(iommu_pdev);
 	struct apple_dart *cfg_dart;
-	dma_addr_t dma_max = DMA_BIT_MASK(dart->ias);
-	dma_addr_t dma_min = 0;
+	dma_addr_t dma_max = dart->dma_max;
+	dma_addr_t dma_min = dart->dma_min;
 	int i, sid;
 
 	put_device(&iommu_pdev->dev);
@@ -1179,10 +1377,34 @@ static const struct iommu_ops apple_dart_iommu_ops = {
 	}
 };
 
+/*
+ * Follow the tables the way the hardware does for DART-side address @addr
+ * of stream @sid: TTBR = addr[31:30], STE = addr[29:21], PTE = addr[20:12]
+ * (iOS, AppleS5L8960XDART). Read-only; for fault diagnostics.
+ */
+static void apple_dart_s5l8960x_walk(struct apple_dart *dart, u32 sid,
+				     u32 addr, const char *why)
+{
+	u32 ttbr_idx = addr >> 30, ste_idx = (addr >> 21) & 0x1ff;
+	u32 pte_idx = (addr >> 12) & 0x1ff;
+	u32 ttbr = readl(dart->regs + DART_TTBR(dart, sid, ttbr_idx));
+	phys_addr_t pa = (phys_addr_t)(ttbr & GENMASK(23, 0)) << 12;
+	u64 ste = 0, pte = 0;
+
+	if ((ttbr & DART_T8020_TTBR_VALID) && pfn_valid(PHYS_PFN(pa))) {
+		ste = READ_ONCE(((u64 *)phys_to_virt(pa))[ste_idx]);
+		pa = ste & GENMASK_ULL(35, 12);
+		if ((ste & BIT(0)) && pfn_valid(PHYS_PFN(pa)))
+			pte = READ_ONCE(((u64 *)phys_to_virt(pa))[pte_idx]);
+	}
+	dev_err(dart->dev,
+		"%s: walk %#x: TTBR%u %#x -> STE[%#x] %#llx -> PTE[%#x] %#llx\n",
+		why, addr, ttbr_idx, ttbr, ste_idx, ste, pte_idx, pte);
+}
+
 static irqreturn_t apple_dart_s5l8960x_irq(int irq, void *dev)
 {
 	struct apple_dart *dart = dev;
-	struct apple_dart_master_cfg *cfg = dev_iommu_priv_get(dart->dev);
 	const char *fault_name = NULL;
 	u32 error = readl(dart->regs + DART_S5L8960X_ERROR);
 	u32 error_code = FIELD_GET(DART_S5L8960X_ERROR_CODE, error);
@@ -1206,10 +1428,20 @@ static irqreturn_t apple_dart_s5l8960x_irq(int irq, void *dev)
 	else
 		fault_name = "unknown";
 
+	/*
+	 * The DART's own device has no iommu master config (dev->iommu is
+	 * NULL), so don't look one up here: doing so turned every fault into
+	 * a NULL dereference in hard IRQ context, i.e. a silent panic. The
+	 * register holds the address as the DART saw it, i.e. relative to the
+	 * window base; add apple,dma-range's base back for the device's IOVA.
+	 */
 	dev_err_ratelimited(
 		dart->dev,
-		"translation fault: status:0x%x stream:%d code:0x%x (%s) at 0x%llx",
-		error, stream_idx, error_code, fault_name, addr | cfg->dma_min);
+		"translation fault: status:0x%x stream:%d code:0x%x (%s) at 0x%x (IOVA %#llx)\n",
+		error, stream_idx, error_code, fault_name, addr,
+		(u64)addr | dart->dma_min);
+	if (__ratelimit(&dart->fault_rs))
+		apple_dart_s5l8960x_walk(dart, stream_idx, addr, "fault");
 
 	writel(error, dart->regs + DART_S5L8960X_ERROR);
 	return IRQ_HANDLED;
@@ -1294,6 +1526,74 @@ static irqreturn_t apple_dart_t8110_irq(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
+/*
+ * apple,dma-range = <start-hi start-lo size-hi size-lo>: the IOVA window of
+ * masters that reference this DART with a 1-cell specifier (e.g. through
+ * "iommu-map"). On the A9/A10 PCIe DARTs this is the ADT vm-offset/vm-size,
+ * 0x80000000 + 0x3c000000: the root complex sends 0x40000000-0x7fffffff to
+ * the NVMMU (FlatDMA), 0xbc000000+ to the NVMMU SART and 0xbffff000 is the
+ * MSI doorbell, so DART IOVAs must stay inside the window. Doing this here,
+ * not with "dma-ranges" on the PCIe node, keeps the CPU's DMA zones intact.
+ */
+static int apple_dart_parse_dma_range(struct apple_dart *dart)
+{
+	u64 range[2];
+	dma_addr_t end;
+
+	dart->dma_min = 0;
+	dart->dma_max = DMA_BIT_MASK(dart->ias);
+
+	if (of_property_read_u64_array(dart->dev->of_node, "apple,dma-range",
+				       range, 2))
+		return 0;
+
+	if (!range[1] || !IS_ALIGNED(range[0], dart->pgsize) ||
+	    !IS_ALIGNED(range[1], dart->pgsize) ||
+	    check_add_overflow(range[0], range[1] - 1, &end) ||
+	    end > DMA_BIT_MASK(dart->ias)) {
+		dev_err(dart->dev, "bad apple,dma-range %#llx+%#llx\n",
+			range[0], range[1]);
+		return -EINVAL;
+	}
+
+	dart->dma_min = range[0];
+	dart->dma_max = end;
+	dev_info(dart->dev, "IOVA window %pad..%pad\n", &dart->dma_min,
+		 &dart->dma_max);
+	return 0;
+}
+
+static int apple_dart_s5l8960x_parse_config(struct apple_dart *dart)
+{
+	struct device_node *np = dart->dev->of_node;
+	u64 reflector;
+
+	if (!of_property_read_u64(np, "apple,error-reflector", &reflector)) {
+		if (!reflector || !IS_ALIGNED(reflector, SZ_4K) ||
+		    reflector >> 12 > U32_MAX) {
+			dev_err(dart->dev, "bad apple,error-reflector %#llx\n",
+				reflector);
+			return -EINVAL;
+		}
+		dart->error_reflector = reflector >> 12;
+	}
+	dart->has_fetch_config = !of_property_read_u32(np, "apple,fetch-config",
+						       &dart->fetch_config);
+	dart->has_diag_config = !of_property_read_u32(np, "apple,diag-config",
+						      &dart->diag_config);
+
+	/* All-ones: the DART isn't powered yet (A9 PCIe: until the port is) */
+	dev_dbg(dart->dev,
+		"boot state: TCR %#x reflector %#x fetch %#x diag %#x error %#x/%#x\n",
+		readl(dart->regs + DART_S5L8960X_TCR),
+		readl(dart->regs + DART_S5L8960X_ERROR_REFLECTOR),
+		readl(dart->regs + DART_S5L8960X_FETCH_CONFIG),
+		readl(dart->regs + DART_S5L8960X_DIAG_CONFIG),
+		readl(dart->regs + DART_S5L8960X_ERROR),
+		readl(dart->regs + DART_S5L8960X_ERROR_ADDR));
+	return 0;
+}
+
 static int apple_dart_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -1309,6 +1609,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 	dart->dev = dev;
 	dart->hw = of_device_get_match_data(dev);
 	spin_lock_init(&dart->lock);
+	ratelimit_state_init(&dart->fault_rs, 5 * HZ, 4);
 
 	dart->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(dart->regs))
@@ -1367,11 +1668,21 @@ static int apple_dart_probe(struct platform_device *pdev)
 		break;
 	}
 
+	ret = apple_dart_parse_dma_range(dart);
+	if (ret)
+		goto err_clk_disable;
+
 	if (dart->num_streams > DART_MAX_STREAMS) {
 		dev_err(&pdev->dev, "Too many streams (%d > %d)\n",
 			dart->num_streams, DART_MAX_STREAMS);
 		ret = -EINVAL;
 		goto err_clk_disable;
+	}
+
+	if (dart->hw->type == DART_S5L8960X) {
+		ret = apple_dart_s5l8960x_parse_config(dart);
+		if (ret)
+			goto err_clk_disable;
 	}
 
 	ret = apple_dart_hw_reset(dart);

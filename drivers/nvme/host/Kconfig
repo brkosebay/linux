@@ -14,6 +14,52 @@ config BLK_DEV_NVME
 	  To compile this driver as a module, choose M here: the
 	  module will be called nvme.
 
+config NVME_APPLE_ANS_EARLY_USB
+	bool "Defer j71t PCIe/ANS probe until early USB userspace is ready"
+	depends on BLK_DEV_NVME && PCIE_APPLE_H9P
+	help
+	  Default pcie_apple_h9p.probe and nvme.apple_ans_probe to false on
+	  j71t. The boot initramfs must bring up USB logging/rescue access,
+	  set both parameters to true and reprobe the platform PCIe host,
+	  then any deferred ANS endpoint. This allows /init to run even when
+	  the PCIe link fails before endpoint enumeration. Other boards are
+	  unchanged. Requires such an initramfs.
+
+config NVME_PCI_READ_ONLY
+	bool "Refuse writes to NVMe PCI devices"
+	depends on BLK_DEV_NVME
+	default y if ARCH_APPLE
+	help
+	  Make every NVMe PCI controller read-only. Namespaces are always
+	  marked read-only and the driver refuses, before submission, every
+	  command that could modify the medium or the controller's persistent
+	  state: I/O queues may only read and flush, and the admin queue only
+	  accepts identify, log/feature reads, queue management and a short
+	  list of volatile Set Features. There is no runtime override.
+
+	  This exists for bring-up on Apple A9/A10 iDevices, whose internal
+	  NVMe disk holds the iOS installation. Say N on any other system.
+
+config NVME_PCI_WRITE_WINDOW
+	bool "Allow one boot-time write window on read-only NVMe PCI devices"
+	depends on NVME_PCI_READ_ONLY
+	help
+	  Accept nvme.write_window=NSID:FIRST-LAST on the kernel command
+	  line. NVMe Write commands to namespace NSID whose whole LBA range
+	  lies within FIRST..LAST (inclusive, in that namespace's logical
+	  blocks) are then allowed, and that namespace is no longer marked
+	  read-only. Everything else CONFIG_NVME_PCI_READ_ONLY refuses stays
+	  refused: writes outside the window or to any other namespace,
+	  Write Zeroes, Dataset Management (trim), Format, Sanitize, firmware
+	  and namespace management, and vendor commands. Trim and Write
+	  Zeroes aren't advertised to the block layer while a window is set.
+
+	  Without the parameter, or if it doesn't parse, the controller is
+	  exactly as read-only as with CONFIG_NVME_PCI_READ_ONLY alone.
+
+	  This lets an Apple iDevice keep iOS on its disk and run Linux from
+	  one partition next to it. Say N unless you need that.
+
 config NVME_MULTIPATH
 	bool "NVMe multipath support"
 	depends on NVME_CORE
