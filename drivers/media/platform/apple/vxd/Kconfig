@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-2.0
+config VIDEO_APPLE_VXD
+	tristate "Apple VXD (PowerVR MSVDX) video decoder driver"
+	depends on VIDEO_DEV
+	depends on ARCH_APPLE || COMPILE_TEST
+	select MEDIA_CONTROLLER
+	select VIDEOBUF2_DMA_CONTIG
+	select V4L2_MEM2MEM_DEV
+	select V4L2_H264
+	select CRC32
+	help
+	  Support for the Apple "VXD" video decoder present on pre-M1 Apple
+	  SoCs starting with the S5L8940X: an Imagination PowerVR MSVDX core
+	  driven by the resident DEVA (MTX) firmware and host-side parsed
+	  parameters.  On the S8000/S8003 (A9) it exposes a V4L2 stateless
+	  H.264 decoder device.
+	  The DEVA firmware image is not included; stage it as
+	  /lib/firmware/apple/vxd-deva.bin, carved from the AppleD5500
+	  kext in the iPadOS kernelcache.
+	  To compile this driver as a module, choose M here: the module
+	  will be called apple-vxd.
