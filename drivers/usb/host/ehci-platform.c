@@ -45,6 +45,16 @@
 
 #define BCM_USB_FIFO_THRESHOLD	0x00800040
 
+/*
+ * J71t: the Lightning port never sources 5 V VBUS (accessory LDO5 is not a
+ * general-purpose 5 V supply); a powered camera adapter feeds its own hub.
+ * This is enumeration accounting only. Read at each host entry.
+ */
+static unsigned int apple_port_budget_ma = 500;
+module_param(apple_port_budget_ma, uint, 0644);
+MODULE_PARM_DESC(apple_port_budget_ma,
+		 "J71t Lightning root-port power budget in mA (default 500; 100 = ADT port-current-limit)");
+
 struct ehci_platform_priv {
 	struct clk *clks[EHCI_MAX_CLKS];
 	struct reset_control *rsts;
@@ -376,6 +386,10 @@ static int ehci_platform_probe(struct platform_device *dev)
 	}
 	hcd->rsrc_start = res_mem->start;
 	hcd->rsrc_len = resource_size(res_mem);
+
+	/* J71t: see apple_port_budget_ma. */
+	if (of_device_is_compatible(dev->dev.of_node, "apple,s8000-ehci"))
+		hcd->power_budget = READ_ONCE(apple_port_budget_ma);
 
 	hcd->tpl_support = of_usb_host_tpl_support(dev->dev.of_node);
 

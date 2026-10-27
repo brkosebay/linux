@@ -1,0 +1,129 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/usb/apple,s8000-usb-role-switch.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Apple S8000 USB role switch
+
+maintainers:
+  - Berkay Kösebay <brkosebay@users.noreply.github.com>
+
+description: |
+  The Apple A9 (S8000/S8003) USB complex pairs a device-only DWC2 controller
+  with a separate EHCI + OHCI host pair. All three share one AUSB PHY, and
+  the USB_CTL register bank selects whether the PHY serves the host pair.
+  The switch owns USB_CTL and the host controllers, which are its child
+  nodes and exist only while the port is in the host role. Device mode is
+  the default. The switch sits in the USB complex node, which owns the
+  complex's DMA remap registers.
+
+properties:
+  compatible:
+    const: apple,s8000-usb-role-switch
+
+  reg:
+    items:
+      - description: USB_CTL register bank
+      - description: USB complex controller glue registers
+
+  reg-names:
+    items:
+      - const: usb-ctl
+      - const: glue
+
+  "#address-cells":
+    const: 2
+
+  "#size-cells":
+    const: 2
+
+  ranges: true
+
+  dma-ranges: true
+
+  nonposted-mmio:
+    $ref: /schemas/types.yaml#/definitions/flag
+    description: The host controller registers need non-posted accesses.
+
+  phys:
+    maxItems: 1
+
+  phy-names:
+    const: usb2-phy
+
+  apple,usb-device:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description: The DWC2 device controller that shares the PHY.
+
+  apple,pmic:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      PMIC providing the Lightning accessory power LDO and its switch.
+
+  apple,tristar:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    items:
+      - items:
+          - description: I2C bus of the Tristar port controller
+          - description: 7-bit I2C address of the Tristar
+    description:
+      Tristar port controller with the connector VBUS sink switch.
+
+patternProperties:
+  "^usb@[0-9a-f]+$":
+    type: object
+    description: The EHCI and its OHCI companion.
+
+required:
+  - compatible
+  - reg
+  - reg-names
+  - "#address-cells"
+  - "#size-cells"
+  - ranges
+  - phys
+  - phy-names
+  - apple,usb-device
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/apple-aic.h>
+    #include <dt-bindings/interrupt-controller/irq.h>
+    #include <dt-bindings/phy/phy.h>
+
+    bus {
+        #address-cells = <2>;
+        #size-cells = <2>;
+
+        usb-role-switch@20e0d8000 {
+            compatible = "apple,s8000-usb-role-switch";
+            reg = <0x2 0x0e0d8000 0x0 0x1000>,
+                  <0x2 0x0c000000 0x0 0x30>;
+            reg-names = "usb-ctl", "glue";
+            #address-cells = <2>;
+            #size-cells = <2>;
+            ranges;
+            dma-ranges;
+            nonposted-mmio;
+            phys = <&ausbphy0 PHY_TYPE_USB2>;
+            phy-names = "usb2-phy";
+            apple,usb-device = <&usbdev>;
+            apple,pmic = <&pmic>;
+            apple,tristar = <&i2c0 0x1a>;
+
+            usb@20c200000 {
+                compatible = "apple,s8000-ehci", "generic-ehci";
+                reg = <0x2 0x0c200000 0x0 0x10000>;
+                interrupts = <AIC_IRQ 215 IRQ_TYPE_LEVEL_HIGH>;
+            };
+
+            usb@20c300000 {
+                compatible = "apple,s8000-ohci", "generic-ohci";
+                reg = <0x2 0x0c300000 0x0 0x10000>;
+                interrupts = <AIC_IRQ 216 IRQ_TYPE_LEVEL_HIGH>;
+            };
+        };
+    };

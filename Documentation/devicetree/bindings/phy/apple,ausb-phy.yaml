@@ -33,6 +33,13 @@ properties:
   "#phy-cells":
     const: 1
 
+  apple,enable-runtime-pm:
+    type: boolean
+    description:
+      Permit the experimental driver runtime-PM policy. The PHY domain can
+      be released only after its controller drops its PHY power reference.
+      Requires a separate driver opt-in on the j71t board.
+
   mode-switch:
     type: boolean
     description:
