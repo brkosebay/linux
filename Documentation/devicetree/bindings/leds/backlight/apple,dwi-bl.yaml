@@ -32,6 +32,10 @@ properties:
       - const: apple,dwi-bl
 
   reg:
+    description: |
+      WLED channel registers on legacy systems. On S8000/S8003, map the
+      complete 16 KiB DWI block, including the configuration registers
+      at offsets 0x00, 0x04 and 0xd0 and the WLED channel at 0x80.
     maxItems: 1
 
   power-domains:
