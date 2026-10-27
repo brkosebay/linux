@@ -363,6 +363,17 @@ struct usb_gadget_ops {
 struct device_node;
 struct notifier_block;
 
+/* Origin of an opted-in current-budget notification; no hardware operation. */
+enum usb_gadget_current_event {
+	USB_GADGET_CURRENT_DETACH = 1,
+	USB_GADGET_CURRENT_BASE,
+	USB_GADGET_CURRENT_REVOKE,
+	USB_GADGET_CURRENT_SUSPEND,
+	USB_GADGET_CURRENT_SETUP,
+	USB_GADGET_CURRENT_GRANT,
+	USB_GADGET_CURRENT_STATE,
+};
+
 /**
  * struct usb_gadget_current_budget - instantaneous USB power authorization
  * @of_node: controller node, valid for the synchronous callback or caller query

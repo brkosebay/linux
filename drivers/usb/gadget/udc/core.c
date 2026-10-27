@@ -96,7 +96,7 @@ static void gadget_current_snapshot(struct usb_gadget *gadget,
 	budget->current_ma = budget->connected && !budget->suspended ? budget_ma : 0;
 }
 
-static void gadget_current_notify(struct usb_gadget *gadget)
+static void gadget_current_notify(struct usb_gadget *gadget, unsigned long event)
 {
 	struct usb_gadget_current_budget budget;
 	unsigned long flags;
@@ -106,7 +106,7 @@ static void gadget_current_notify(struct usb_gadget *gadget)
 	spin_lock_irqsave(&gadget->state_lock, flags);
 	gadget_current_snapshot(gadget, &budget);
 	spin_unlock_irqrestore(&gadget->state_lock, flags);
-	atomic_notifier_call_chain(&gadget_current_notifier, 0, &budget);
+	atomic_notifier_call_chain(&gadget_current_notifier, event, &budget);
 }
 
 /**
@@ -191,7 +191,7 @@ void usb_gadget_current_source_detached(const struct device_node *node)
 		gadget->current_bus_connected = false;
 		gadget->current_suspended = false;
 		spin_unlock_irqrestore(&gadget->state_lock, flags);
-		gadget_current_notify(gadget);
+		gadget_current_notify(gadget, USB_GADGET_CURRENT_DETACH);
 	}
 	mutex_unlock(&udc_lock);
 }
@@ -210,7 +210,7 @@ static void gadget_current_set_base(struct usb_gadget *gadget, unsigned int ma)
 		gadget->current_host_grant = false;
 	}
 	spin_unlock_irqrestore(&gadget->state_lock, flags);
-	gadget_current_notify(gadget);
+	gadget_current_notify(gadget, USB_GADGET_CURRENT_BASE);
 }
 
 /* Also used to revoke a grant when its ep0 status transfer fails. */
@@ -224,7 +224,7 @@ void usb_gadget_revoke_current_grant(struct usb_gadget *gadget)
 	gadget->current_extra_ma = 0;
 	gadget->current_host_grant = false;
 	spin_unlock_irqrestore(&gadget->state_lock, flags);
-	gadget_current_notify(gadget);
+	gadget_current_notify(gadget, USB_GADGET_CURRENT_REVOKE);
 }
 EXPORT_SYMBOL_GPL(usb_gadget_revoke_current_grant);
 
@@ -240,7 +240,7 @@ void usb_gadget_current_budget_suspend(struct usb_gadget *gadget, bool suspended
 	gadget->current_extra_ma = 0;
 	gadget->current_host_grant = false;
 	spin_unlock_irqrestore(&gadget->state_lock, flags);
-	gadget_current_notify(gadget);
+	gadget_current_notify(gadget, USB_GADGET_CURRENT_SUSPEND);
 }
 EXPORT_SYMBOL_GPL(usb_gadget_current_budget_suspend);
 
@@ -264,7 +264,7 @@ int usb_gadget_handle_current_grant(struct usb_gadget *gadget,
 	}
 	spin_unlock_irqrestore(&gadget->state_lock, flags);
 	if (newly_connected)
-		gadget_current_notify(gadget);
+		gadget_current_notify(gadget, USB_GADGET_CURRENT_SETUP);
 	if (ctrl->bRequest != 0x40 ||
 	    (ctrl->bRequestType != 0x40 && ctrl->bRequestType != 0xc0))
 		return -EOPNOTSUPP;
@@ -286,7 +286,7 @@ int usb_gadget_handle_current_grant(struct usb_gadget *gadget,
 	dev_info_ratelimited(&gadget->dev,
 			     "Apple host current grant: extra %d mA, suspend %d mA\n",
 			     extra, suspend);
-	gadget_current_notify(gadget);
+	gadget_current_notify(gadget, USB_GADGET_CURRENT_GRANT);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(usb_gadget_handle_current_grant);
@@ -1381,7 +1381,7 @@ void usb_gadget_set_state(struct usb_gadget *gadget,
 		schedule_work(&gadget->work);
 	spin_unlock_irqrestore(&gadget->state_lock, flags);
 	trace_usb_gadget_set_state(gadget, 0);
-	gadget_current_notify(gadget);
+	gadget_current_notify(gadget, USB_GADGET_CURRENT_STATE);
 }
 EXPORT_SYMBOL_GPL(usb_gadget_set_state);
 

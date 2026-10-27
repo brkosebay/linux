@@ -2404,11 +2404,50 @@ static int bq27xxx_cached_optional_value(const struct bq27xxx_cached_value *cach
 	return bq27xxx_cached_value(cached, val) ? -ENODATA : 0;
 }
 
+/* A full flag describes capacity, not whether this pack is supplying power. */
+static int bq27xxx_j71t_status(int current_ua, int online, int status)
+{
+	if (current_ua < 0)
+		return POWER_SUPPLY_STATUS_DISCHARGING;
+	if (online < 0)
+		return online;
+	if (!online)
+		return POWER_SUPPLY_STATUS_NOT_CHARGING;
+	if (status == POWER_SUPPLY_STATUS_FULL)
+		return status;
+	return current_ua > 0 ? POWER_SUPPLY_STATUS_CHARGING : POWER_SUPPLY_STATUS_NOT_CHARGING;
+}
+
+/* Never query another supply while holding the gauge mutex. No gauge writes. */
+static int bq27xxx_battery_j71t_status(int current_ua, union power_supply_propval *val)
+{
+	struct power_supply *source;
+	union power_supply_propval online;
+	int ret = -ENODEV;
+
+	if (current_ua < 0) {
+		val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		return 0;
+	}
+	source = power_supply_get_by_name("usb");
+	if (source) {
+		ret = power_supply_get_property(source, POWER_SUPPLY_PROP_ONLINE, &online);
+		power_supply_put(source);
+	}
+	ret = bq27xxx_j71t_status(current_ua, ret ? ret : online.intval, val->intval);
+	if (ret < 0)
+		return ret;
+	val->intval = ret;
+	return 0;
+}
+
 static int bq27xxx_battery_get_cached_property(struct power_supply *psy,
 					       struct bq27xxx_device_info *di,
 					       enum power_supply_property psp,
 					       union power_supply_propval *val)
 {
+	union power_supply_propval battery_current;
+	bool j71t = of_device_is_compatible(di->dev->of_node, "apple,j71t-bq27540");
 	int ret;
 
 	mutex_lock(&di->lock);
@@ -2425,6 +2464,8 @@ static int bq27xxx_battery_get_cached_property(struct power_supply *psy,
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
 		ret = bq27xxx_cached_value(&di->cache.status, val);
+		if (!ret && j71t)
+			ret = bq27xxx_cached_value(&di->cache.current_now, &battery_current);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		ret = bq27xxx_cached_value(&di->cache.voltage, val);
@@ -2485,6 +2526,8 @@ static int bq27xxx_battery_get_cached_property(struct power_supply *psy,
 
 out_unlock:
 	mutex_unlock(&di->lock);
+	if (!ret && j71t && psp == POWER_SUPPLY_PROP_STATUS)
+		ret = bq27xxx_battery_j71t_status(battery_current.intval, val);
 	return ret;
 }
 
