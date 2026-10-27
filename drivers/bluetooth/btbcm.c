@@ -11,6 +11,7 @@
 #include <linux/firmware.h>
 #include <linux/dmi.h>
 #include <linux/of.h>
+#include <linux/property.h>
 #include <linux/string.h>
 #include <linux/unaligned.h>
 
@@ -30,6 +31,8 @@
 #define BDADDR_BCM4330B1 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb1, 0x30, 0x43}})
 #define BDADDR_BCM4334B0 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb0, 0x34, 0x43}})
 #define BDADDR_BCM4345C5 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc5, 0x45, 0x43}})
+#define BDADDR_BCM4355C0 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc0, 0x55, 0x43}})
+#define BDADDR_BCM4355C1 (&(bdaddr_t) {{0x93, 0x76, 0x00, 0xc1, 0x55, 0x43}})
 #define BDADDR_BCM43341B (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0x1b, 0x34, 0x43}})
 
 #define BCM_FW_NAME_LEN			64
@@ -120,6 +123,12 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
 	 *
 	 * The address AA:AA:AA:AA:AA:AA indicates a BCM43430A1 controller
 	 * with no configured address.
+	 *
+	 * The address 43:55:C0:00:1F:AC indicates a BCM4355C0 controller
+	 * with no configured address.
+	 *
+	 * The address 43:55:C1:00:76:93 indicates a BCM4355C1 controller
+	 * with no configured address.
 	 */
 	if (!bacmp(&bda->bdaddr, BDADDR_BCM20702A0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM20702A1) ||
@@ -128,6 +137,8 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
 	    !bacmp(&bda->bdaddr, BDADDR_BCM4330B1) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM4334B0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM4345C5) ||
+	    !bacmp(&bda->bdaddr, BDADDR_BCM4355C0) ||
+	    !bacmp(&bda->bdaddr, BDADDR_BCM4355C1) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A0) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A1) ||
 	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B)) {
@@ -269,7 +280,7 @@ int btbcm_patchram(struct hci_dev *hdev, const struct firmware *fw)
 }
 EXPORT_SYMBOL(btbcm_patchram);
 
-static int btbcm_reset(struct hci_dev *hdev)
+int btbcm_reset(struct hci_dev *hdev)
 {
 	struct sk_buff *skb;
 
@@ -287,6 +298,7 @@ static int btbcm_reset(struct hci_dev *hdev)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(btbcm_reset);
 
 static struct sk_buff *btbcm_read_local_name(struct hci_dev *hdev)
 {
@@ -500,6 +512,7 @@ static const struct bcm_subver_table bcm_uart_subver_table[] = {
 	{ 0x4606, "BCM4324B5"	},	/* 002.006.006 */
 	{ 0x6109, "BCM4335C0"	},	/* 003.001.009 */
 	{ 0x610c, "BCM4354"	},	/* 003.001.012 */
+	{ 0x6214, "BCM4355C1"	},	/* 003.002.020 */
 	{ 0x2122, "BCM4343A0"	},	/* 001.001.034 */
 	{ 0x2209, "BCM43430A1"  },	/* 001.002.009 */
 	{ 0x6119, "BCM4345C0"	},	/* 003.001.025 */
@@ -668,7 +681,11 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 	fw_name_count++;
 
 	for (i = 0; i < fw_name_count; i++) {
-		err = firmware_request_nowarn(&fw, fw_name[i], &hdev->dev);
+		/* J71t RAM boots have no firmware helper; fail each name fast. */
+		if (board_name && !strcmp(board_name, "apple,j71t"))
+			err = request_firmware_direct(&fw, fw_name[i], &hdev->dev);
+		else
+			err = firmware_request_nowarn(&fw, fw_name[i], &hdev->dev);
 		if (err == 0) {
 			bt_dev_info(hdev, "%s '%s' Patch",
 				    hw_name ? hw_name : "BCM", fw_name[i]);
@@ -694,6 +711,91 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
 }
 EXPORT_SYMBOL_GPL(btbcm_initialize);
 
+/* Public identities are in HCI byte order here; the firmware file is BMac. */
+static bool btbcm_j71t_bdaddr_valid(const bdaddr_t *addr)
+{
+	return bacmp(addr, BDADDR_ANY) && !(addr->b[5] & 1);
+}
+
+static int btbcm_j71t_set_bdaddr(struct hci_dev *hdev)
+{
+	struct fwnode_handle *fwnode;
+	struct hci_rp_read_bd_addr *rp;
+	const struct firmware *fw;
+	struct sk_buff *skb;
+	const char *source;
+	bdaddr_t addr;
+	int err;
+
+	if (!hdev->dev.parent ||
+	    !of_device_is_compatible(hdev->dev.parent->of_node,
+				     "apple,j71t-bcm4355-bt"))
+		return 0;
+
+	fwnode = dev_fwnode(hdev->dev.parent);
+	if (fwnode_property_count_u8(fwnode, "local-bd-address") == sizeof(addr) &&
+	    !fwnode_property_read_u8_array(fwnode, "local-bd-address",
+					   (u8 *)&addr, sizeof(addr))) {
+		if (hci_test_quirk(hdev, HCI_QUIRK_BDADDR_PROPERTY_BROKEN)) {
+			bdaddr_t swapped;
+
+			baswap(&swapped, &addr);
+			bacpy(&addr, &swapped);
+		}
+	} else {
+		bacpy(&addr, BDADDR_ANY);
+	}
+
+	source = "device-tree";
+	if (!btbcm_j71t_bdaddr_valid(&addr)) {
+		/* Direct loading cannot stall a RAM boot in the sysfs fallback. */
+		err = request_firmware_direct(&fw, "apple/j71t-BMac.bin",
+					      &hdev->dev);
+		if (err) {
+			bt_dev_err(hdev, "BCM: No valid J71t device address (%d)", err);
+			return err;
+		}
+		if (fw->size != sizeof(addr)) {
+			release_firmware(fw);
+			return -EINVAL;
+		}
+		/* Resolved iOS BMac is stored in display/network byte order. */
+		baswap(&addr, (const bdaddr_t *)fw->data);
+		release_firmware(fw);
+		if (!btbcm_j71t_bdaddr_valid(&addr))
+			return -EINVAL;
+		source = "private BMac";
+	}
+
+	/* Program after the last Patchram reset, before the default-address check. */
+	err = btbcm_set_bdaddr(hdev, &addr);
+	if (err)
+		return err;
+
+	skb = __hci_cmd_sync(hdev, HCI_OP_READ_BD_ADDR, 0, NULL,
+			     HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb))
+		return PTR_ERR(skb);
+	if (skb->len != sizeof(*rp)) {
+		kfree_skb(skb);
+		return -EIO;
+	}
+	rp = (struct hci_rp_read_bd_addr *)skb->data;
+	err = rp->status || bacmp(&rp->bdaddr, &addr) ? -EIO : 0;
+	kfree_skb(skb);
+	if (err) {
+		bt_dev_err(hdev, "BCM: J71t device address readback failed");
+		return err;
+	}
+
+	/* Keep MGMT reconfiguration consistent with the checked controller state. */
+	bacpy(&hdev->public_addr, &addr);
+	hci_clear_quirk(hdev, HCI_QUIRK_INVALID_BDADDR);
+	hci_clear_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
+	bt_dev_info(hdev, "BCM: Using %s device address (%pMR)", source, &addr);
+	return 0;
+}
+
 int btbcm_finalize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud_mode)
 {
 	int err;
@@ -704,6 +806,10 @@ int btbcm_finalize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud_m
 		if (err)
 			return err;
 	}
+
+	err = btbcm_j71t_set_bdaddr(hdev);
+	if (err)
+		return err;
 
 	btbcm_check_bdaddr(hdev);
 

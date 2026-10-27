@@ -2676,6 +2676,16 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 	devinfo = bus->bus_priv.pcie->devinfo;
 	brcmf_dbg(PCIE, "Enter, dev=%p, bus=%p\n", dev, bus);
 
+	/*
+	 * The host bridge cut the device off because its link did not come
+	 * back. Any BAR access now could stall the CPU, so stay down; with the
+	 * bus down, firmware commands and transmits are refused early.
+	 */
+	if (pci_dev_is_disconnected(devinfo->pdev)) {
+		brcmf_err(bus, "device lost over suspend, staying down\n");
+		return -ENODEV;
+	}
+
 	/* Check if device is still up and running, if so we are ready */
 	if (brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->intmask) != 0) {
 		brcmf_dbg(PCIE, "Try to wakeup device....\n");

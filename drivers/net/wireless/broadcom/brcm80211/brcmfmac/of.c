@@ -121,12 +121,20 @@ int brcmf_of_probe(struct device *dev, enum brcmf_bus_type bus_type,
 
 	brcmf_dbg(INFO, "%s LPO clock\n", clk ? "enable" : "no");
 
+	/*
+	 * The binding allows the country code map on the PCIe compatibles
+	 * (pci14e4,*) too, and without one the firmware never leaves its
+	 * NVRAM default country (e.g. "XZ") when cfg80211 sets a country.
+	 */
+	if (np) {
+		err = brcmf_of_get_country_codes(dev, settings);
+		if (err)
+			brcmf_err("failed to get OF country code map (err=%d)\n",
+				  err);
+	}
+
 	if (!np || !of_device_is_compatible(np, "brcm,bcm4329-fmac"))
 		return 0;
-
-	err = brcmf_of_get_country_codes(dev, settings);
-	if (err)
-		brcmf_err("failed to get OF country code map (err=%d)\n", err);
 
 	err = of_get_mac_address(np, settings->mac);
 	if (err == -EPROBE_DEFER)
