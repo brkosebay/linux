@@ -273,3 +273,14 @@ config ARM_PXA2xx_CPUFREQ
 	  This add the CPUFreq driver support for Intel PXA2xx SOCs.
 
 	  If in doubt, say N.
+
+config APPLE_A9_TUNING
+    bool "Guarded experimental S8003 CPU clocks"
+    depends on ARM_APPLE_SOC_CPUFREQ=y
+    depends on APPLE_S8003_THERMAL=y && CPU_THERMAL && DEBUG_FS
+    depends on !THERMAL_EMULATION
+    help
+      Root-only, default-off, heartbeat-protected S8003 stock boost and
+      experimental clocks with decoded CPU core/buck7 DAC offsets.
+      Exact 3125 uV increments, bounded per rail to the cloned stock state
+      plus 50000 uV. No PMIC or factory-calibration writes are exposed. Enable with apple_soc_cpufreq.a9_tuning=1.

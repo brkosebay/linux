@@ -52,9 +52,46 @@ properties:
     const: 1
 
   "#size-cells":
+    enum: [0, 1]
+    description: |
+      Zero describes non-MMIO register addresses on the PMIC bus. NVMEM
+      children then provide their register count with the size property.
+      One preserves the legacy register-address and byte-count tuples.
+
+  interrupts:
+    description: D2365 active-low event output to the AP GPIO controller.
+    maxItems: 1
+
+  interrupt-controller: true
+
+  "#interrupt-cells":
+    description: D2365 event number within the PMIC interrupt domain.
     const: 1
 
+  wakeup-source: true
+
+  gpio:
+    $ref: /schemas/gpio/apple,d2365-pmic-gpio.yaml
+
+  interrupts:
+    description: D2365 active-low event output to the AP GPIO controller.
+    maxItems: 1
+
+  interrupt-controller: true
+
+  "#interrupt-cells":
+    description: D2365 event number within the PMIC interrupt domain.
+    const: 1
+
+  wakeup-source: true
+
+  gpio:
+    $ref: /schemas/gpio/apple,d2365-pmic-gpio.yaml
+
 patternProperties:
+  "^charger@[0-9a-f]+$":
+    $ref: /schemas/power/supply/apple,d2365-charger.yaml
+
   "^backlight(@[0-9a-f]+)?$":
     $ref: /schemas/leds/backlight/apple,pmic-bl.yaml
 
