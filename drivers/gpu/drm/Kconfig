@@ -372,3 +372,4 @@ endif
 config DRM_PANEL_ORIENTATION_QUIRKS
 	tristate
 
+source "drivers/gpu/drm/apple-g5p/Kconfig"

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config DRM_APPLE_G5P
+	bool "Apple A9/G5P render driver"
+	depends on DRM=y && ARCH_APPLE && OF && PM && ARM64_16K_PAGES
+	select DRM_GEM_SHMEM_HELPER
+	select FW_LOADER
+	select CRYPTO_LIB_SHA256
+	help
+	  Render-node driver for the S8003 G5P GPU using the unmodified META
+	  firmware from the device. Supports TYPED_V3 jobs, GEM buffers, PRIME,
+	  virtual address spaces and syncobj synchronization for the merged
+	  Mesa winsys. Register with a9_gpu_drm.enable=1. Built-in only while
+	  reset and active-DMA teardown require the platform boot sequence.
