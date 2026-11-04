@@ -12,11 +12,14 @@ maintainers:
 description: |
   Certain Apple SoCs include additional PMGR power states that are controlled
   via a different "misc" control block. This includes the fabric and memory
-  controller states.
+  controller states. On S8000/S8003 it is the combined SoC and memory
+  performance state, with the per-state records that follow it, and the
+  registers of PMGR's voltage sequencer.
 
 properties:
   compatible:
     enum:
+      - apple,s8000-pmgr-misc
       - apple,t6000-pmgr-misc
       - apple,t6020-pmgr-misc
 
@@ -24,14 +27,31 @@ properties:
     maxItems: 2
 
   reg-names:
-    items:
-      - const: fabric-ps
-      - const: dcs-ps
+    maxItems: 2
 
 required:
   - compatible
   - reg
   - reg-names
+
+allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: apple,s8000-pmgr-misc
+    then:
+      properties:
+        reg-names:
+          items:
+            - const: soc-ps
+            - const: volman
+    else:
+      properties:
+        reg-names:
+          items:
+            - const: fabric-ps
+            - const: dcs-ps
 
 additionalProperties: false
 

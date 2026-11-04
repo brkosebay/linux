@@ -7,6 +7,8 @@
  * Based on scpi-cpufreq.c
  */
 
+#include <linux/capability.h>
+#include <linux/debugfs.h>
 #include <linux/bitfield.h>
 #include <linux/bitops.h>
 #include <linux/cpu.h>
@@ -20,6 +22,15 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pm_opp.h>
+#include <linux/pm_qos.h>
+#include <linux/rcupdate.h>
+#include <linux/seq_file.h>
+#include <linux/spinlock.h>
+#include <linux/soc/apple/s8003-power.h>
+#include <linux/thermal.h>
+#include <linux/uaccess.h>
+#include <linux/workqueue.h>
+#include <linux/mutex.h>
 #include <linux/slab.h>
 
 #define APPLE_DVFS_CMD				0x20
@@ -69,7 +80,12 @@ struct apple_soc_cpufreq_info {
 	u64 ps1_shift;
 };
 
+struct a9_guard;
+
 struct apple_cpu_priv {
+	bool a9;
+	raw_spinlock_t lock;
+	struct a9_guard *guard;
 	struct device *cpu_dev;
 	void __iomem *reg_base;
 	const struct apple_soc_cpufreq_info *info;
@@ -84,6 +100,15 @@ static const struct apple_soc_cpufreq_info soc_s5l8960x_info = {
 	.cur_pstate_shift = APPLE_DVFS_STATUS_CUR_PS_SHIFT_S5L8960X,
 	.ps1_mask = APPLE_DVFS_CMD_PS1_S5L8960X,
 	.ps1_shift = APPLE_DVFS_CMD_PS1_S5L8960X_SHIFT,
+};
+
+static const struct apple_soc_cpufreq_info soc_s8000_info = {
+	.has_ps2 = true,
+	.max_pstate = 15,
+	.cur_pstate_mask = APPLE_DVFS_STATUS_CUR_PS_T8103,
+	.cur_pstate_shift = APPLE_DVFS_STATUS_CUR_PS_SHIFT_T8103,
+	.ps1_mask = GENMASK(3, 0),
+	.ps1_shift = 0,
 };
 
 static const struct apple_soc_cpufreq_info soc_t8103_info = {
@@ -114,6 +139,10 @@ static const struct apple_soc_cpufreq_info soc_default_info = {
 
 static const struct of_device_id apple_soc_cpufreq_of_match[] __maybe_unused = {
 	{
+		.compatible = "apple,s8000-cluster-cpufreq",
+		.data = &soc_s8000_info,
+	},
+	{
 		.compatible = "apple,s5l8960x-cluster-cpufreq",
 		.data = &soc_s5l8960x_info,
 	},
@@ -131,6 +160,9 @@ static const struct of_device_id apple_soc_cpufreq_of_match[] __maybe_unused = {
 	},
 	{}
 };
+
+static unsigned int a9_psinfo1_offset(unsigned int state);
+static unsigned int a9_psinfo_khz(u64 word);
 
 static unsigned int apple_soc_cpufreq_get_rate(unsigned int cpu)
 {
@@ -159,6 +191,10 @@ static unsigned int apple_soc_cpufreq_get_rate(unsigned int cpu)
 		pstate = FIELD_GET(APPLE_DVFS_CMD_PS1, reg);
 	}
 
+	/* Extended OPPs share slot 14: decode the live word, not its first alias. */
+	if (priv->a9 && pstate > 8 && pstate <= 15)
+		return a9_psinfo_khz(readq(priv->reg_base + a9_psinfo1_offset(pstate)));
+
 	cpufreq_for_each_valid_entry(p, policy->freq_table)
 		if (p->driver_data == pstate)
 			return p->frequency;
@@ -168,32 +204,64 @@ static unsigned int apple_soc_cpufreq_get_rate(unsigned int cpu)
 	return 0;
 }
 
-static int apple_soc_cpufreq_set_target(struct cpufreq_policy *policy,
-					unsigned int index)
+/* Caller serializes A9 command and PSINFO stores with priv->lock. */
+static int apple_soc_cpufreq_request(struct apple_cpu_priv *priv, unsigned int pstate)
 {
-	struct apple_cpu_priv *priv = policy->driver_data;
-	unsigned int pstate = policy->freq_table[index].driver_data;
 	u64 reg;
 
-	/* Fallback for newer SoCs */
-	if (index > priv->info->max_pstate)
-		index = priv->info->max_pstate;
-
+	if (pstate > priv->info->max_pstate)
+		return -EINVAL;
 	if (readq_poll_timeout_atomic(priv->reg_base + APPLE_DVFS_CMD, reg,
 				      !(reg & APPLE_DVFS_CMD_BUSY), 2,
-				      APPLE_DVFS_TRANSITION_TIMEOUT)) {
-		return -EIO;
-	}
-
+				      APPLE_DVFS_TRANSITION_TIMEOUT))
+		return -ETIMEDOUT;
 	reg &= ~priv->info->ps1_mask;
-	reg |= pstate << priv->info->ps1_shift;
+	reg |= (u64)pstate << priv->info->ps1_shift;
 	if (priv->info->has_ps2)
 		FIELD_MODIFY(APPLE_DVFS_CMD_PS2, &reg, pstate);
 	reg |= APPLE_DVFS_CMD_SET;
-
-	writeq_relaxed(reg, priv->reg_base + APPLE_DVFS_CMD);
-
+	writeq(reg, priv->reg_base + APPLE_DVFS_CMD);
+	/* Match iOS's synchronous A9 path. Actual state can remain lower when
+	 * hardware enforces Apple's PSINFO2 max-load or thermal restrictions.
+	 */
+	if (priv->a9 && readq_poll_timeout_atomic(priv->reg_base + APPLE_DVFS_CMD, reg,
+						 !(reg & APPLE_DVFS_CMD_BUSY), 2,
+						 APPLE_DVFS_TRANSITION_TIMEOUT))
+		return -ETIMEDOUT;
 	return 0;
+}
+
+#include "apple-a9-tuning.h"
+
+static int apple_soc_cpufreq_set_target(struct cpufreq_policy *policy,
+				      unsigned int index)
+{
+	struct apple_cpu_priv *priv = policy->driver_data;
+	struct cpufreq_frequency_table *entry = &policy->freq_table[index];
+	unsigned long flags;
+	int ret;
+
+	raw_spin_lock_irqsave(&priv->lock, flags);
+	if (!a9_target_allowed(priv, entry->driver_data, entry->frequency))
+		ret = -EPERM;
+	else
+		ret = apple_soc_cpufreq_request(priv, entry->driver_data);
+	raw_spin_unlock_irqrestore(&priv->lock, flags);
+	return ret;
+}
+
+static int apple_soc_cpufreq_set_boost(struct cpufreq_policy *policy, int state)
+{
+	struct apple_cpu_priv *priv = policy->driver_data;
+	unsigned long flags;
+	bool allowed;
+
+	raw_spin_lock_irqsave(&priv->lock, flags);
+	allowed = !priv->a9 || !state || a9_target_allowed(priv, 8, 1848000);
+	raw_spin_unlock_irqrestore(&priv->lock, flags);
+	if (!allowed)
+		return -EPERM;
+	return cpufreq_boost_set_sw(policy, state);
 }
 
 static unsigned int apple_soc_cpufreq_fast_switch(struct cpufreq_policy *policy,
@@ -220,13 +288,15 @@ static int apple_soc_cpufreq_find_cluster(struct cpufreq_policy *policy,
 		return ret;
 
 	match = of_match_node(apple_soc_cpufreq_of_match, args.np);
-	of_node_put(args.np);
-	if (!match)
+	if (!match) {
+		of_node_put(args.np);
 		return -ENODEV;
+	}
 
 	*info = match->data;
 
 	*reg_base = of_iomap(args.np, 0);
+	of_node_put(args.np);
 	if (!*reg_base)
 		return -ENOMEM;
 
@@ -291,6 +361,8 @@ static int apple_soc_cpufreq_init(struct cpufreq_policy *policy)
 		dev_pm_opp_put(opp);
 	}
 
+	raw_spin_lock_init(&priv->lock);
+	priv->a9 = info == &soc_s8000_info;
 	priv->cpu_dev = cpu_dev;
 	priv->reg_base = reg_base;
 	priv->info = info;
@@ -303,9 +375,12 @@ static int apple_soc_cpufreq_init(struct cpufreq_policy *policy)
 
 	policy->cpuinfo.transition_latency = transition_latency;
 	policy->dvfs_possible_from_any_cpu = true;
-	policy->fast_switch_possible = true;
+	policy->fast_switch_possible = !priv->a9;
 	policy->suspend_freq = freq_table[0].frequency;
 
+	ret = a9_guard_init(policy);
+	if (ret)
+		goto out_free_cpufreq_table;
 	return 0;
 
 out_free_cpufreq_table:
@@ -323,6 +398,7 @@ static void apple_soc_cpufreq_exit(struct cpufreq_policy *policy)
 {
 	struct apple_cpu_priv *priv = policy->driver_data;
 
+	a9_guard_exit(priv);
 	dev_pm_opp_free_cpufreq_table(priv->cpu_dev, &policy->freq_table);
 	dev_pm_opp_of_cpumask_remove_table(policy->cpus);
 	iounmap(priv->reg_base);
@@ -340,7 +416,8 @@ static struct cpufreq_driver apple_soc_cpufreq_driver = {
 	.target_index	= apple_soc_cpufreq_set_target,
 	.fast_switch	= apple_soc_cpufreq_fast_switch,
 	.register_em	= cpufreq_register_em_with_opp,
-	.set_boost	= cpufreq_boost_set_sw,
+	.set_boost	= apple_soc_cpufreq_set_boost,
+	.ready		= a9_guard_ready,
 	.suspend	= cpufreq_generic_suspend,
 };
 

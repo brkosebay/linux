@@ -591,6 +591,13 @@ static int enter_state(suspend_state_t state)
 	if (!mutex_trylock(&system_transition_mutex))
 		return -EBUSY;
 
+	error = pm_suspend_precheck_call_chain(state);
+	if (error) {
+		dpm_save_failed_step(SUSPEND_PREPARE);
+		mutex_unlock(&system_transition_mutex);
+		return error;
+	}
+
 	if (state == PM_SUSPEND_TO_IDLE)
 		s2idle_begin();
 

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config APPLE_MESA_A9
+	tristate "Apple A9 Mesa sensor AP-side power and status transport"
+	depends on SPI
+	depends on REGULATOR
+	depends on ARCH_APPLE || COMPILE_TEST
+	help
+	  Power sequencing and a single SPI status transport for the Mesa
+	  fingerprint sensor on Apple A9 (s8000/s8003) iPads.
+
+	  This slice is deliberately inert: it cannot capture frames, upload
+	  a sensor patch, provision the sensor or store keys. It is enabled
+	  only by the mesa_a9.enable=1 module parameter, and every sensor
+	  operation is an explicit debugfs write gated by CAP_SYS_RAWIO.
+
+	  Say M here for Apple A9 iPads. The module will be called mesa-a9.

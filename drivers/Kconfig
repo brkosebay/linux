@@ -254,3 +254,5 @@ source "drivers/cdx/Kconfig"
 source "drivers/resctrl/Kconfig"
 
 endmenu
+
+source "drivers/mesa/Kconfig"

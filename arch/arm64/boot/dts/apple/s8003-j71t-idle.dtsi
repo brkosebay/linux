@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* DT permission only; each experiment also requires a boot parameter. */
+&ps_mca0 {
+	apple,idle-power-gate;
+};
+
+&ps_mca1 {
+	apple,idle-power-gate;
+};
+
+&ps_mca2 {
+	apple,idle-power-gate;
+};
+
+&ps_mca3 {
+	apple,idle-power-gate;
+};
+
+&ps_mca4 {
+	apple,idle-power-gate;
+};
+
+&ps_isp {
+	apple,idle-power-gate;
+};
+
+&ps_msr {
+	apple,idle-power-gate;
+};
+
+&ps_jpg {
+	apple,idle-power-gate;
+};
+
+&ps_vdec {
+	apple,idle-power-gate;
+};
+
+&ps_venc {
+	apple,idle-power-gate;
+};
+
+&ps_venc_pipe {
+	apple,idle-power-gate;
+};
+
+&ps_venc_me0 {
+	apple,idle-power-gate;
+};
+
+&ps_venc_me1 {
+	apple,idle-power-gate;
+};
+
+&ausbphy0 {
+	apple,enable-runtime-pm;
+};

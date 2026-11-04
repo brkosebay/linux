@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * iPad 5 (J71t) with the Smart Cover halls on PMIC event IRQs, so that the
+ * cover can wake the system. Opt-in: s8003-j71t.dtb keeps the polled
+ * switches and never touches the PMIC event registers.
+ *
+ * The PMIC event line (AP GPIO 76) comes from s800x-ipad5.dtsi.
+ */
+
+#include "s8003-j71t.dts"
+
+&periph_pmu_gpio {
+	apple,enable-hall-irqs;
+};
+
+&{/soc/i2c@20a110000/pmic@3c/rtc@500} {
+	/* AppleD2365PMU's RTC alarm unmasks event 0x10. */
+	interrupts-extended = <&{/soc/i2c@20a110000/pmic@3c} 0x10>;
+	wakeup-source;
+};
+
+&{/soc/i2c@20a110000/pmic@3c/charger@180} {
+	/* The iOS event decoder names event 0x49 "usb". */
+	interrupts-extended = <&{/soc/i2c@20a110000/pmic@3c} 0x49>;
+	wakeup-source;
+};
+
+/* iOS AppleM68Buttons debounces both halls with its 14000 us default. */
+&{/smart-cover} {
+	compatible = "gpio-keys";
+	/delete-property/ poll-interval;
+
+	lid-switch {
+		interrupts-extended = <&{/soc/i2c@20a110000/pmic@3c} 0x30>;
+		debounce-interval = <14>;
+		wakeup-source;
+	};
+};
+
+&{/smart-cover-aux} {
+	compatible = "gpio-keys";
+	/delete-property/ poll-interval;
+
+	cover-switch {
+		interrupts-extended = <&{/soc/i2c@20a110000/pmic@3c} 0x3a>;
+		debounce-interval = <14>;
+		wakeup-source;
+	};
+};

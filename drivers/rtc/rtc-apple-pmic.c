@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/nvmem-consumer.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/rtc.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
@@ -24,22 +25,30 @@
 #include <asm/byteorder.h>
 
 #define RTC_COUNTER_SIZE 6
+#define RTC_ALARM_SIZE 4
+#define RTC_CONTROL_RUN BIT(0)
+#define RTC_CONTROL_ALARM BIT(6)
 
 /**
  * struct apple_pmic_rtc_regs -	RTC Hardware registers
  * @control:			RTC Control
  * @counter:			Time Counter
+ * @alarm:			Alarm seconds counter
+ * @has_alarm:			Alarm registers are present
  */
 
 struct apple_pmic_rtc_regs {
 	u32 control;
 	u32 counter;
+	u32 alarm;
+	bool has_alarm;
 };
 
 /**
  * struct apple_pmic_rtc -  RTC driver internal structure
  * @rtc:		RTC device
  * @regmap:		regmap used to access registers
+ * @dev:		device used for logging and wake setup
  * @nvmem_cell:		nvmem cell for offset
  * @regs:		hardware registers
  * @base:		RTC base address
@@ -183,9 +192,96 @@ static int apple_pmic_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	return 0;
 }
 
+static int apple_pmic_rtc_alarm_irq_enable(struct device *dev,
+					   unsigned int enabled)
+{
+	struct apple_pmic_rtc *ap_rtc = dev_get_drvdata(dev);
+
+	/* AppleD2365PMU 0xfffffff006bbbc1c writes these exact values. */
+	return regmap_write(ap_rtc->regmap,
+			    ap_rtc->base + ap_rtc->regs->control,
+			    RTC_CONTROL_RUN |
+			    (enabled ? RTC_CONTROL_ALARM : 0));
+}
+
+static int apple_pmic_rtc_read_alarm(struct device *dev,
+				     struct rtc_wkalrm *alarm)
+{
+	struct apple_pmic_rtc *ap_rtc = dev_get_drvdata(dev);
+	u8 buf[RTC_ALARM_SIZE];
+	unsigned int control;
+	time64_t secs;
+	int rc;
+
+	rc = regmap_bulk_read(ap_rtc->regmap,
+			      ap_rtc->base + ap_rtc->regs->alarm,
+			      buf, sizeof(buf));
+	if (rc)
+		return rc;
+	rc = regmap_read(ap_rtc->regmap,
+			 ap_rtc->base + ap_rtc->regs->control, &control);
+	if (rc)
+		return rc;
+
+	secs = (time64_t)get_unaligned_le32(buf) + ap_rtc->offset;
+	rtc_time64_to_tm(secs, &alarm->time);
+	alarm->enabled = !!(control & RTC_CONTROL_ALARM);
+	alarm->pending = 0;
+	return 0;
+}
+
+static int apple_pmic_rtc_set_alarm(struct device *dev,
+				    struct rtc_wkalrm *alarm)
+{
+	struct apple_pmic_rtc *ap_rtc = dev_get_drvdata(dev);
+	u8 buf[RTC_ALARM_SIZE];
+	time64_t secs;
+	int rc;
+
+	if (!alarm->enabled)
+		return apple_pmic_rtc_alarm_irq_enable(dev, 0);
+
+	secs = rtc_tm_to_time64(&alarm->time) - ap_rtc->offset;
+	if (secs <= 0 || secs > U32_MAX)
+		return -ERANGE;
+	put_unaligned_le32(secs, buf);
+
+	/* iOS programs 0x508 first, then enables the one-shot at 0x500. */
+	rc = regmap_bulk_write(ap_rtc->regmap,
+			       ap_rtc->base + ap_rtc->regs->alarm,
+			       buf, sizeof(buf));
+	if (rc)
+		return rc;
+	return apple_pmic_rtc_alarm_irq_enable(dev, 1);
+}
+
+static irqreturn_t apple_pmic_rtc_alarm_irq(int irq, void *data)
+{
+	struct apple_pmic_rtc *ap_rtc = data;
+	int rc;
+
+	/* The PMU event read is the acknowledge; iOS then clears alarm bit 6. */
+	rc = regmap_update_bits(ap_rtc->regmap,
+				ap_rtc->base + ap_rtc->regs->control,
+				RTC_CONTROL_ALARM, 0);
+	if (rc)
+		dev_warn_ratelimited(ap_rtc->dev,
+				     "failed to disable fired alarm: %d\n", rc);
+	rtc_update_irq(ap_rtc->rtc, 1, RTC_IRQF | RTC_AF);
+	return IRQ_HANDLED;
+}
+
 static const struct rtc_class_ops apple_pmic_rtc_ops = {
 	.read_time	= apple_pmic_rtc_read_time,
 	.set_time	= apple_pmic_rtc_set_time,
+};
+
+static const struct rtc_class_ops apple_pmic_rtc_alarm_ops = {
+	.read_time	= apple_pmic_rtc_read_time,
+	.set_time	= apple_pmic_rtc_set_time,
+	.read_alarm	= apple_pmic_rtc_read_alarm,
+	.set_alarm	= apple_pmic_rtc_set_alarm,
+	.alarm_irq_enable = apple_pmic_rtc_alarm_irq_enable,
 };
 
 static const struct apple_pmic_rtc_regs amber_regs = {
@@ -193,7 +289,10 @@ static const struct apple_pmic_rtc_regs amber_regs = {
 };
 
 static const struct apple_pmic_rtc_regs antigua_regs = {
-	.counter = 0x2
+	.control = 0x0,
+	.counter = 0x2,
+	.alarm = 0x8,
+	.has_alarm = true,
 };
 
 static const struct apple_pmic_rtc_regs calpe_regs = {
@@ -230,6 +329,7 @@ static int apple_pmic_rtc_probe(struct platform_device *pdev)
 	struct device_node *node = pdev->dev.of_node;
 	const struct of_device_id *match;
 	struct apple_pmic_rtc *ap_rtc;
+	int irq;
 	int rc;
 
 	match = of_match_node(apple_pmic_id_table, node);
@@ -264,6 +364,31 @@ static int apple_pmic_rtc_probe(struct platform_device *pdev)
 	ap_rtc->rtc->ops = &apple_pmic_rtc_ops;
 	ap_rtc->rtc->range_min = INT_MIN;
 	ap_rtc->rtc->range_max = INT_MAX;
+	if (ap_rtc->regs->has_alarm) {
+		irq = platform_get_irq_optional(pdev, 0);
+		if (irq == -EPROBE_DEFER)
+			return irq;
+		if (irq > 0) {
+			rc = devm_request_threaded_irq(&pdev->dev, irq, NULL,
+						       apple_pmic_rtc_alarm_irq,
+						IRQF_ONESHOT,
+						"apple-pmic-rtc", ap_rtc);
+			if (rc)
+				return dev_err_probe(&pdev->dev, rc,
+						     "cannot request alarm IRQ\n");
+			device_init_wakeup(&pdev->dev, true);
+			rc = devm_pm_set_wake_irq(&pdev->dev, irq);
+			if (rc)
+				return dev_err_probe(&pdev->dev, rc,
+						     "cannot set alarm wake IRQ\n");
+			ap_rtc->rtc->ops = &apple_pmic_rtc_alarm_ops;
+			dev_info(&pdev->dev,
+				 "D2365 alarm at 0x%03x on PMU event IRQ %d\n",
+				 ap_rtc->base + ap_rtc->regs->alarm, irq);
+		} else if (irq != -ENXIO) {
+			return irq;
+		}
+	}
 
 	return devm_rtc_register_device(ap_rtc->rtc);
 }

@@ -275,6 +275,16 @@ void __init fdt_scan_reserved_mem_late(void)
 		return;
 	}
 
+	/* Early architecture fixups may have added static reservations. */
+	total_reserved_mem_cnt = reserved_mem_count;
+	fdt_for_each_subnode(child, fdt, node) {
+		int len;
+
+		if (of_fdt_device_is_available(fdt, child) &&
+		    fdt_getprop(fdt, child, "reg", &len) && len)
+			total_reserved_mem_cnt++;
+	}
+
 	/* Attempt dynamic allocation of a new reserved_mem array */
 	if (alloc_reserved_mem_array())
 		return;

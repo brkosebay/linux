@@ -1653,6 +1653,9 @@ static int power_supply_read_temp(struct thermal_zone_device *tzd,
 	WARN_ON(tzd == NULL);
 	psy = thermal_zone_device_priv(tzd);
 	ret = power_supply_get_property(psy, POWER_SUPPLY_PROP_TEMP, &val);
+	/* The thermal core retries EAGAIN quietly instead of logging no data. */
+	if (ret == -ENODATA)
+		return -EAGAIN;
 	if (ret)
 		return ret;
 

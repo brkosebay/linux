@@ -2,6 +2,15 @@
 #
 # ARM CPU Idle drivers
 #
+config ARM_APPLE_A9_IDLE
+	bool "Apple A9 experimental WFI clock gating"
+	depends on ARM64 && ARCH_APPLE
+	help
+	  Opt-in WFI accounting with cpuidle_apple_a9_idle.enable=1.
+	  On j71t, clock_gate=1 also permits the returning Twister forced
+	  clock-gate primitive. Both parameters default off.
+	  CPU/cluster retention is not supported by this driver.
+
 config ARM_CPUIDLE
 	bool "Generic ARM CPU idle Driver"
 	depends on ARM
@@ -130,3 +139,10 @@ config ARM_QCOM_SPM_CPUIDLE
 	  The Subsystem Power Manager (SPM) controls low power modes for the
 	  CPU and L2 cores. It interface with various system drivers to put
 	  the cores in low power modes.
+
+config ARM_APPLE_A9_CPUIDLE
+	bool "Apple A9 WFI accounting driver"
+	depends on ARM64 && ARCH_APPLE
+	help
+	  Register a WFI-only driver on Twister CPUs when booted with
+	  cpuidle_apple_a9.enable=1. Default off; no deep idle support.

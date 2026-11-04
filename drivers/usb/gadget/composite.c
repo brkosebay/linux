@@ -1593,6 +1593,16 @@ static int composite_ep0_queue(struct usb_composite_dev *cdev,
 	return ret;
 }
 
+static void composite_current_grant_complete(struct usb_ep *ep,
+					     struct usb_request *req)
+{
+	struct usb_composite_dev *cdev = req->context;
+
+	if (req->status && cdev)
+		usb_gadget_revoke_current_grant(cdev->gadget);
+	composite_setup_complete(ep, req);
+}
+
 static int count_ext_compat(struct usb_configuration *c)
 {
 	int i, res;
@@ -1764,6 +1774,16 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	struct usb_function		*f = NULL;
 	struct usb_function		*iter;
 	u8				endp;
+
+	value = usb_gadget_handle_current_grant(gadget, ctrl);
+	if (value != -EOPNOTSUPP) {
+		req->zero = 0;
+		req->context = cdev;
+		req->complete = composite_current_grant_complete;
+		req->length = 0;
+		gadget->ep0->driver_data = cdev;
+		goto check_value;
+	}
 
 	if (w_length > USB_COMP_EP0_BUFSIZ) {
 		if (ctrl->bRequestType & USB_DIR_IN) {
@@ -2271,6 +2291,8 @@ check_value:
 		value = composite_ep0_queue(cdev, req, GFP_ATOMIC);
 		if (value < 0) {
 			DBG(cdev, "ep_queue --> %d\n", value);
+			if (req->complete == composite_current_grant_complete)
+				usb_gadget_revoke_current_grant(gadget);
 			req->status = 0;
 			composite_setup_complete(gadget->ep0, req);
 		}
@@ -2588,6 +2610,7 @@ void composite_suspend(struct usb_gadget *gadget)
 	 * suspend/resume callbacks?
 	 */
 	DBG(cdev, "suspend\n");
+	usb_gadget_current_budget_suspend(gadget, true);
 	if (cdev->config) {
 		list_for_each_entry(f, &cdev->config->functions, list) {
 			if (f->suspend)
@@ -2616,6 +2639,7 @@ void composite_resume(struct usb_gadget *gadget)
 	 * suspend/resume callbacks?
 	 */
 	DBG(cdev, "resume\n");
+	usb_gadget_current_budget_suspend(gadget, false);
 	if (cdev->driver->resume)
 		cdev->driver->resume(cdev);
 	if (cdev->config) {

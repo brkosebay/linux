@@ -1032,6 +1032,14 @@ config SND_SOC_CS42L73
 	tristate "Cirrus Logic CS42L73 CODEC"
 	depends on I2C
 
+config SND_SOC_CS42L81
+	tristate "Cirrus Logic CS42L81 CODEC (Apple)"
+	depends on SPI_MASTER
+	select REGMAP
+	help
+	  Apple-specific Cirrus Logic CS42L81 codec with integrated speaker
+	  drivers, controlled over SPI (A9 iPad 5).
+
 config SND_SOC_CS42L83
 	tristate "Cirrus Logic CS42L83 CODEC"
 	depends on I2C

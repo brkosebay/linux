@@ -530,4 +530,13 @@ config LOONGSON2_THERMAL
 	  is higher than the high temperature threshold or lower than the low
 	  temperature threshold, the interrupt will occur.
 
+config APPLE_S8003_THERMAL
+    tristate "Apple S8003 on-die temperature sensors"
+    depends on ARCH_APPLE || COMPILE_TEST
+    depends on OF && THERMAL_OF
+    depends on HWMON
+    help
+      Validated SOC0/SOC1/TCC2 zones and six-channel raw diagnostics on A9
+      S8003. Preserves bootloader trim and hardware SoCHOT protections.
+
 endif

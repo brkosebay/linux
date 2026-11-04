@@ -449,6 +449,15 @@ void restore_processor_state(void);
 /* kernel/power/main.c */
 extern int register_pm_notifier(struct notifier_block *nb);
 extern int unregister_pm_notifier(struct notifier_block *nb);
+/**
+ * register_pm_suspend_precheck_notifier - register an early suspend veto
+ * @nb: notifier whose action is the target suspend_state_t
+ *
+ * Prechecks run before filesystem sync and console preparation.  They must
+ * only validate current policy/state and return; they have no post callback.
+ */
+int register_pm_suspend_precheck_notifier(struct notifier_block *nb);
+int unregister_pm_suspend_precheck_notifier(struct notifier_block *nb);
 extern void ksys_sync_helper(void);
 extern void pm_report_hw_sleep_time(u64 t);
 extern void pm_report_max_hw_sleep(u64 t);
@@ -494,6 +503,16 @@ static inline int register_pm_notifier(struct notifier_block *nb)
 }
 
 static inline int unregister_pm_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+
+static inline int register_pm_suspend_precheck_notifier(struct notifier_block *nb)
+{
+	return 0;
+}
+
+static inline int unregister_pm_suspend_precheck_notifier(struct notifier_block *nb)
 {
 	return 0;
 }

@@ -183,3 +183,4 @@ endif
 obj-y					+= xilinx/
 obj-$(CONFIG_ARCH_ZYNQ)			+= zynq/
 obj-$(CONFIG_COMMON_CLK_ZYNQMP)         += zynqmp/
+obj-$(CONFIG_COMMON_CLK_APPLE_S8000_TOUCH) += clk-apple-s8000-touch.o

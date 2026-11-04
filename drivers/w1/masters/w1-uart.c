@@ -17,8 +17,10 @@
 #include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/mux/consumer.h>
 #include <linux/of.h>
 #include <linux/serdev.h>
+#include <linux/spinlock.h>
 #include <linux/w1.h>
 
 /* UART packet contains start and stop bit */
@@ -26,6 +28,30 @@
 
 /* Timeout to wait for completion of serdev-receive */
 #define W1_UART_TIMEOUT msecs_to_jiffies(500)
+
+#define W1_UART_HDQ_BAUDRATE		57600
+/* A transaction takes a few ms; do not hold the bus for long on a miss. */
+#define W1_UART_HDQ_TIMEOUT		msecs_to_jiffies(100)
+#define W1_UART_HDQ_TRIES		3
+#define W1_UART_HDQ_BREAK_MIN_US		250
+#define W1_UART_HDQ_BREAK_MAX_US		500
+#define W1_UART_HDQ_RECOVERY_MIN_US	150
+#define W1_UART_HDQ_RECOVERY_MAX_US	500
+#define W1_UART_HDQ_BITS_PER_BYTE	8
+#define W1_UART_HDQ_RX_BITS		16
+#define W1_UART_HDQ_ONE			0xfe
+#define W1_UART_HDQ_ZERO			0xc0
+#define W1_UART_HDQ_RX_ONE_MIN		0xf0
+#define W1_UART_HDQ_FAMILY		0x01
+
+enum w1_uart_mode {
+	W1_UART_MODE_1WIRE,
+	W1_UART_MODE_HDQ,
+};
+
+struct w1_uart_variant {
+	enum w1_uart_mode mode;
+};
 
 /**
  * struct w1_uart_config - configuration for 1-Wire operation
@@ -43,6 +69,8 @@ struct w1_uart_config {
  * struct w1_uart_device - 1-Wire UART device structure
  * @serdev: serial device
  * @bus: w1-bus master
+ * @mode: selected 1-Wire or HDQ protocol
+ * @hdq_mux: optional mux state routing HDQ to the application processor
  * @cfg_reset: config for 1-Wire reset
  * @cfg_touch_0: config for 1-Wire write-0 cycle
  * @cfg_touch_1: config for 1-Wire write-1 and read cycle
@@ -50,10 +78,18 @@ struct w1_uart_config {
  * @rx_mutex: mutex to protect rx_err and rx_byte
  * @rx_err: indicates an error in serdev-receive
  * @rx_byte: result byte from serdev-receive
+ * @hdq_rx_lock: protects HDQ receive state from the UART callback
+ * @hdq_command: encoded HDQ command and expected UART echo
+ * @hdq_response: decoded HDQ response byte
+ * @hdq_rx_bit: number of accepted echo and response symbols
+ * @hdq_receiving: whether an HDQ transaction is receiving symbols
+ * @hdq_response_valid: whether @hdq_response is ready for the W1 client
  */
 struct w1_uart_device {
 	struct serdev_device *serdev;
 	struct w1_bus_master bus;
+	enum w1_uart_mode mode;
+	struct mux_state *hdq_mux;
 
 	struct w1_uart_config cfg_reset;
 	struct w1_uart_config cfg_touch_0;
@@ -67,6 +103,13 @@ struct w1_uart_device {
 	struct mutex rx_mutex;
 	int rx_err;
 	u8 rx_byte;
+
+	spinlock_t hdq_rx_lock; /* Protects the HDQ receive state. */
+	u8 hdq_command[W1_UART_HDQ_BITS_PER_BYTE];
+	u8 hdq_response;
+	u8 hdq_rx_bit;
+	bool hdq_receiving;
+	bool hdq_response_valid;
 };
 
 /**
@@ -228,6 +271,26 @@ static int w1_uart_serdev_open(struct w1_uart_device *w1dev)
 		return ret;
 	}
 
+	serdev_device_set_flow_control(serdev, false);
+
+	if (w1dev->mode == W1_UART_MODE_HDQ) {
+		unsigned int baudrate;
+
+		baudrate = serdev_device_set_baudrate(serdev,
+						      W1_UART_HDQ_BAUDRATE);
+		if (baudrate != W1_UART_HDQ_BAUDRATE)
+			return dev_err_probe(dev, -EINVAL,
+					     "failed to set %u baud (got %u)\n",
+					     W1_UART_HDQ_BAUDRATE, baudrate);
+
+		ret = serdev_device_set_stopbits(serdev, SERDEV_STOPBITS_2);
+		if (ret)
+			return dev_err_probe(dev, ret,
+					     "failed to set two stop bits\n");
+
+		return 0;
+	}
+
 	ret = w1_uart_set_config_reset(w1dev);
 	if (ret < 0) {
 		dev_err(dev, "config for reset failed\n");
@@ -246,9 +309,132 @@ static int w1_uart_serdev_open(struct w1_uart_device *w1dev)
 		return ret;
 	}
 
-	serdev_device_set_flow_control(serdev, false);
+	return 0;
+}
+
+static void w1_uart_hdq_cancel_receive(struct w1_uart_device *w1dev)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&w1dev->hdq_rx_lock, flags);
+	w1dev->hdq_receiving = false;
+	w1dev->hdq_response_valid = false;
+	spin_unlock_irqrestore(&w1dev->hdq_rx_lock, flags);
+}
+
+static int w1_uart_hdq_break(struct w1_uart_device *w1dev)
+{
+	struct serdev_device *serdev = w1dev->serdev;
+	int ret;
+
+	ret = serdev_device_break_ctl(serdev, -1);
+	if (ret)
+		return ret;
+
+	usleep_range(W1_UART_HDQ_BREAK_MIN_US, W1_UART_HDQ_BREAK_MAX_US);
+	ret = serdev_device_break_ctl(serdev, 0);
+	if (ret)
+		return ret;
+
+	usleep_range(W1_UART_HDQ_RECOVERY_MIN_US,
+		     W1_UART_HDQ_RECOVERY_MAX_US);
 
 	return 0;
+}
+
+/*
+ * One break + command + response cycle. A corrupted echo symbol is never
+ * accepted by the receive callback, so the response then never completes
+ * and the cycle ends with -ETIMEDOUT.
+ */
+static int w1_uart_hdq_xfer_once(struct w1_uart_device *w1dev)
+{
+	struct serdev_device *serdev = w1dev->serdev;
+	unsigned long flags;
+	unsigned long timeout;
+	ssize_t written;
+	int ret;
+
+	ret = w1_uart_hdq_break(w1dev);
+	if (ret)
+		return ret;
+
+	reinit_completion(&w1dev->rx_byte_received);
+	spin_lock_irqsave(&w1dev->hdq_rx_lock, flags);
+	w1dev->hdq_response = 0;
+	w1dev->hdq_rx_bit = 0;
+	w1dev->hdq_receiving = true;
+	w1dev->hdq_response_valid = false;
+	spin_unlock_irqrestore(&w1dev->hdq_rx_lock, flags);
+
+	written = serdev_device_write(serdev, w1dev->hdq_command,
+				      sizeof(w1dev->hdq_command), HZ);
+	if (written < 0) {
+		ret = written;
+		goto cancel_receive;
+	}
+	if (written != sizeof(w1dev->hdq_command)) {
+		ret = -EIO;
+		goto cancel_receive;
+	}
+
+	serdev_device_wait_until_sent(serdev, HZ);
+	timeout = wait_for_completion_timeout(&w1dev->rx_byte_received,
+					      W1_UART_HDQ_TIMEOUT);
+	if (!timeout) {
+		ret = -ETIMEDOUT;
+		goto cancel_receive;
+	}
+
+	return 0;
+
+cancel_receive:
+	w1_uart_hdq_cancel_receive(w1dev);
+
+	return ret;
+}
+
+static int w1_uart_hdq_xfer(struct w1_uart_device *w1dev, u8 command)
+{
+	unsigned int bit;
+	unsigned int try;
+	int ret;
+	int deselect_ret;
+
+	w1_uart_hdq_cancel_receive(w1dev);
+
+	if (w1dev->hdq_mux) {
+		ret = mux_state_select(w1dev->hdq_mux);
+		if (ret)
+			return ret;
+	}
+
+	for (bit = 0; bit < W1_UART_HDQ_BITS_PER_BYTE; bit++)
+		w1dev->hdq_command[bit] = command & BIT(bit) ?
+			W1_UART_HDQ_ONE : W1_UART_HDQ_ZERO;
+
+	/*
+	 * Retry a lost cycle: the gauge's response window is long over after
+	 * the timeout, and the next break resynchronizes its HDQ state.
+	 */
+	for (try = 0; try < W1_UART_HDQ_TRIES; try++) {
+		ret = w1_uart_hdq_xfer_once(w1dev);
+		if (ret != -ETIMEDOUT)
+			break;
+		dev_dbg(&w1dev->serdev->dev,
+			"HDQ command %02x timed out (try %u/%u)\n",
+			command, try + 1, W1_UART_HDQ_TRIES);
+	}
+
+	if (w1dev->hdq_mux) {
+		deselect_ret = mux_state_deselect(w1dev->hdq_mux);
+		if (!ret && deselect_ret) {
+			w1_uart_hdq_cancel_receive(w1dev);
+			ret = deselect_ret;
+		}
+	}
+
+	return ret;
 }
 
 /*
@@ -293,6 +479,33 @@ static size_t w1_uart_serdev_receive_buf(struct serdev_device *serdev,
 					  const u8 *buf, size_t count)
 {
 	struct w1_uart_device *w1dev = serdev_device_get_drvdata(serdev);
+	unsigned long flags;
+	size_t i;
+
+	if (w1dev->mode == W1_UART_MODE_HDQ) {
+		spin_lock_irqsave(&w1dev->hdq_rx_lock, flags);
+		for (i = 0; i < count && w1dev->hdq_receiving; i++) {
+			if (w1dev->hdq_rx_bit < W1_UART_HDQ_BITS_PER_BYTE &&
+			    buf[i] != w1dev->hdq_command[w1dev->hdq_rx_bit])
+				continue;
+
+			if (w1dev->hdq_rx_bit >= W1_UART_HDQ_BITS_PER_BYTE &&
+			    buf[i] >= W1_UART_HDQ_RX_ONE_MIN)
+				w1dev->hdq_response |=
+					BIT(w1dev->hdq_rx_bit -
+					    W1_UART_HDQ_BITS_PER_BYTE);
+
+			w1dev->hdq_rx_bit++;
+			if (w1dev->hdq_rx_bit == W1_UART_HDQ_RX_BITS) {
+				w1dev->hdq_receiving = false;
+				w1dev->hdq_response_valid = true;
+				complete(&w1dev->rx_byte_received);
+			}
+		}
+		spin_unlock_irqrestore(&w1dev->hdq_rx_lock, flags);
+
+		return count;
+	}
 
 	mutex_lock(&w1dev->rx_mutex);
 
@@ -355,22 +568,117 @@ static u8 w1_uart_touch_bit(void *data, u8 bit)
 	return val == w1cfg->tx_byte ? 1 : 0;
 }
 
+static void w1_uart_hdq_write_byte(void *data, u8 byte)
+{
+	struct w1_uart_device *w1dev = data;
+	int ret;
+
+	ret = w1_uart_hdq_xfer(w1dev, byte);
+	if (ret)
+		dev_dbg(&w1dev->serdev->dev, "HDQ transfer failed: %d\n", ret);
+}
+
+static bool w1_uart_hdq_take_response(struct w1_uart_device *w1dev,
+				      u8 *response)
+{
+	unsigned long flags;
+	bool valid;
+
+	spin_lock_irqsave(&w1dev->hdq_rx_lock, flags);
+	valid = w1dev->hdq_response_valid;
+	if (valid) {
+		*response = w1dev->hdq_response;
+		w1dev->hdq_response_valid = false;
+	}
+	spin_unlock_irqrestore(&w1dev->hdq_rx_lock, flags);
+
+	return valid;
+}
+
+static u8 w1_uart_hdq_reset_bus(void *data)
+{
+	struct w1_uart_device *w1dev = data;
+	int ret;
+
+	w1_uart_hdq_cancel_receive(w1dev);
+	if (w1dev->hdq_mux) {
+		ret = mux_state_select(w1dev->hdq_mux);
+		if (ret)
+			return 1;
+	}
+
+	ret = w1_uart_hdq_break(w1dev);
+	if (w1dev->hdq_mux && mux_state_deselect(w1dev->hdq_mux) && !ret)
+		ret = -EIO;
+
+	return ret ? 1 : 0;
+}
+
+static u8 w1_uart_hdq_read_byte(void *data)
+{
+	struct w1_uart_device *w1dev = data;
+	u8 response;
+
+	return w1_uart_hdq_take_response(w1dev, &response) ? response : 0xff;
+}
+
+static u8 w1_uart_hdq_read_block(void *data, u8 *buf, int len)
+{
+	struct w1_uart_device *w1dev = data;
+
+	if (len != 1)
+		return 0;
+
+	return w1_uart_hdq_take_response(w1dev, buf) ? 1 : 0;
+}
+
+static void w1_uart_hdq_search(void *data, struct w1_master *master,
+			       u8 search_type,
+			       w1_slave_found_callback slave_found)
+{
+	u64 module_id = W1_UART_HDQ_FAMILY;
+	u64 rn_le = cpu_to_le64(module_id);
+	u8 crc;
+
+	crc = w1_calc_crc8((u8 *)&rn_le, 7);
+	slave_found(master, (u64)crc << 56 | module_id);
+}
+
 static int w1_uart_probe(struct serdev_device *serdev)
 {
 	struct device *dev = &serdev->dev;
+	const struct w1_uart_variant *variant;
 	struct w1_uart_device *w1dev;
 	int ret;
 
 	w1dev = devm_kzalloc(dev, sizeof(*w1dev), GFP_KERNEL);
 	if (!w1dev)
 		return -ENOMEM;
-	w1dev->bus.data = w1dev;
-	w1dev->bus.reset_bus = w1_uart_reset_bus;
-	w1dev->bus.touch_bit = w1_uart_touch_bit;
 	w1dev->serdev = serdev;
+	w1dev->bus.data = w1dev;
+	variant = device_get_match_data(dev);
+	if (variant)
+		w1dev->mode = variant->mode;
+
+	if (w1dev->mode == W1_UART_MODE_HDQ) {
+		w1dev->hdq_mux = devm_mux_state_get_optional(dev, "hdq");
+		if (IS_ERR(w1dev->hdq_mux))
+			return dev_err_probe(dev, PTR_ERR(w1dev->hdq_mux),
+					     "failed to get HDQ mux state\n");
+
+		w1dev->bus.write_byte = w1_uart_hdq_write_byte;
+		w1dev->bus.read_byte = w1_uart_hdq_read_byte;
+		w1dev->bus.read_block = w1_uart_hdq_read_block;
+		w1dev->bus.reset_bus = w1_uart_hdq_reset_bus;
+		w1dev->bus.search = w1_uart_hdq_search;
+	} else {
+		w1dev->bus.reset_bus = w1_uart_reset_bus;
+		w1dev->bus.touch_bit = w1_uart_touch_bit;
+	}
 
 	init_completion(&w1dev->rx_byte_received);
 	mutex_init(&w1dev->rx_mutex);
+	spin_lock_init(&w1dev->hdq_rx_lock);
 
 	serdev_device_set_drvdata(serdev, w1dev);
 	serdev_device_set_client_ops(serdev, &w1_uart_serdev_ops);
@@ -393,8 +701,17 @@ static void w1_uart_remove(struct serdev_device *serdev)
 	w1_remove_master_device(&w1dev->bus);
 }
 
+static const struct w1_uart_variant w1_uart_1wire = {
+	.mode = W1_UART_MODE_1WIRE,
+};
+
+static const struct w1_uart_variant w1_uart_hdq = {
+	.mode = W1_UART_MODE_HDQ,
+};
+
 static const struct of_device_id w1_uart_of_match[] = {
-	{ .compatible = "w1-uart" },
+	{ .compatible = "w1-uart", .data = &w1_uart_1wire },
+	{ .compatible = "ti,hdq-uart", .data = &w1_uart_hdq },
 	{},
 };
 MODULE_DEVICE_TABLE(of, w1_uart_of_match);

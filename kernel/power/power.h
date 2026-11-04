@@ -240,6 +240,7 @@ static inline void suspend_test_finish(const char *label) {}
 /* kernel/power/main.c */
 extern int pm_notifier_call_chain_robust(unsigned long val_up, unsigned long val_down);
 extern int pm_notifier_call_chain(unsigned long val);
+int pm_suspend_precheck_call_chain(suspend_state_t state);
 #endif
 
 #ifdef CONFIG_HIGHMEM

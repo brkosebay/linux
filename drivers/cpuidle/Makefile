@@ -15,6 +15,7 @@ obj-$(CONFIG_HALTPOLL_CPUIDLE)		  += cpuidle-haltpoll.o
 
 ##################################################################################
 # ARM SoC drivers
+obj-$(CONFIG_ARM_APPLE_A9_IDLE) += cpuidle-apple-a9-idle.o
 obj-$(CONFIG_ARM_MVEBU_V7_CPUIDLE) += cpuidle-mvebu-v7.o
 obj-$(CONFIG_ARM_BIG_LITTLE_CPUIDLE)	+= cpuidle-big_little.o
 obj-$(CONFIG_ARM_CLPS711X_CPUIDLE)	+= cpuidle-clps711x.o
@@ -46,3 +47,5 @@ obj-$(CONFIG_RISCV_SBI_CPUIDLE)		+= cpuidle-riscv-sbi.o
 ###############################################################################
 # S390 drivers
 obj-$(CONFIG_S390_CPUIDLE)		+= cpuidle-s390.o
+
+obj-$(CONFIG_ARM_APPLE_A9_CPUIDLE) += cpuidle-apple-a9.o

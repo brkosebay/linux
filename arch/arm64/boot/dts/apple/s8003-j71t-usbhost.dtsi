@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * J71t Lightning port USB host mode: the EHCI + OHCI pair behind a role
+ * switch that shares the AUSB PHY with the device-only DWC2. Hardware
+ * values: Apple's J71t ADT (otgphyctrl, usb-complex, dock).
+ *
+ * Included right after /dts-v1/ (before the SoC dtsi, like the AOP
+ * observer): full paths only, and it includes the binding headers it uses.
+ */
+
+#include <dt-bindings/interrupt-controller/apple-aic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/phy/phy.h>
+
+/ {
+	soc {
+		/* usb-complex */
+		bus@20c000000 {
+			usb_role: usb-role-switch@20e0d8000 {
+				compatible = "apple,s8000-usb-role-switch";
+				/* The DMA remap words belong to the usb-complex. */
+				reg = <0x2 0x0e0d8000 0x0 0x1000>,
+				      <0x2 0x0c000000 0x0 0x30>;
+				reg-names = "usb-ctl", "glue";
+				#address-cells = <2>;
+				#size-cells = <2>;
+				ranges;
+				/* The usb-complex dma-ranges apply to the host pair. */
+				dma-ranges;
+				nonposted-mmio;
+				phys = <&ausbphy0 PHY_TYPE_USB2>;
+				phy-names = "usb2-phy";
+				apple,usb-device = <&usbdev>;
+				/* dock function-acc_pwr / acc_sw_en: D2365 LDO5 */
+				apple,pmic = <&{/soc/i2c@20a110000/pmic@3c}>;
+				/* CBTL1610 VBUS sink bit */
+				apple,tristar = <&i2c0 0x1a>;
+
+				/* Created by the switch in host mode only. */
+				usb@20c200000 {
+					compatible = "apple,s8000-ehci", "generic-ehci";
+					reg = <0x2 0x0c200000 0x0 0x10000>;
+					interrupts = <AIC_IRQ 215 IRQ_TYPE_LEVEL_HIGH>;
+					power-domains = <&ps_usb2host0>;
+				};
+
+				usb@20c300000 {
+					compatible = "apple,s8000-ohci", "generic-ohci";
+					reg = <0x2 0x0c300000 0x0 0x10000>;
+					interrupts = <AIC_IRQ 216 IRQ_TYPE_LEVEL_HIGH>;
+					power-domains = <&ps_usb2host0_ohci>;
+				};
+			};
+		};
+	};
+};

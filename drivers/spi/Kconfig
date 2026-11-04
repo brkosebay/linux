@@ -118,6 +118,13 @@ config SPI_AMLOGIC_SPISG
 	  communication controller), which is available on platforms such as
 	  Amlogic A4 SoCs.
 
+config SPI_APPLE_S8000
+	tristate "Apple S8000 Samsung SPI v1 PIO controller"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on OF && COMMON_CLK
+	help
+	  Bounded byte-wide PIO support for the legacy SPI controller on A9.
+
 config SPI_APPLE
 	tristate "Apple SoC SPI Controller platform driver"
 	depends on ARCH_APPLE || COMPILE_TEST

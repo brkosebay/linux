@@ -19,6 +19,7 @@
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_fdt.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -30,12 +31,18 @@
 #include "core.h"
 #include "pinmux.h"
 
+struct apple_gpio_soc_data {
+	bool s8000_mux;
+};
+
 struct apple_gpio_pinctrl {
 	struct device *dev;
 	struct pinctrl_dev *pctldev;
+	const struct apple_gpio_soc_data *soc;
 
 	void __iomem *base;
 	struct regmap *map;
+	bool warm;
 
 	struct pinctrl_desc pinctrl_desc;
 	struct gpio_chip gpio_chip;
@@ -182,9 +189,22 @@ static int apple_gpio_pinmux_set(struct pinctrl_dev *pctldev, unsigned int func,
 {
 	struct apple_gpio_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
 
-	apple_gpio_set_reg(
-		pctl, group, REG_GPIOx_PERIPH | REG_GPIOx_INPUT_ENABLE,
-		FIELD_PREP(REG_GPIOx_PERIPH, func) | REG_GPIOx_INPUT_ENABLE);
+	u32 mask = REG_GPIOx_PERIPH | REG_GPIOx_INPUT_ENABLE;
+	u32 value = FIELD_PREP(REG_GPIOx_PERIPH, func) | REG_GPIOx_INPUT_ENABLE;
+
+	/* S8000 GPIO platform-function modes, verified in its iOS driver:
+	 * peripheral routing clears bit 4; GPIO mux selects output mode.
+	 * This reproduces the N1 display-sync on/off states without changing
+	 * the generic/M1 register semantics or the pin data/pull fields.
+	 */
+	if (pctl->soc && pctl->soc->s8000_mux) {
+		mask |= BIT(4);
+		if (!func) {
+			mask |= REG_GPIOx_MODE;
+			value |= FIELD_PREP(REG_GPIOx_MODE, REG_GPIOx_OUT);
+		}
+	}
+	apple_gpio_set_reg(pctl, group, mask, value);
 
 	return 0;
 }
@@ -354,8 +374,33 @@ static void apple_gpio_irq_handler(struct irq_desc *desc)
 	chained_irq_enter(chip, desc);
 	for (pinh = 0; pinh < gc->ngpio; pinh += 32) {
 		pending = readl_relaxed(pctl->base + REG_IRQ(*grpp, pinh));
-		for_each_set_bit(pinl, &pending, 32)
-			generic_handle_domain_irq(gc->irq.domain, pinh + pinl);
+		for_each_set_bit(pinl, &pending, 32) {
+			unsigned int pin = pinh + pinl;
+			int ret;
+
+			ret = pin < gc->ngpio ?
+				generic_handle_domain_irq(gc->irq.domain, pin) : -EINVAL;
+			if (ret && pctl->warm) {
+				/* An inherited, unmapped source has nobody to ack it.
+				 * Mask only this GPIO, then clear this group's latch.
+				 */
+				if (pin < gc->ngpio) {
+					u32 reg = apple_gpio_get_reg(pctl, pin);
+					u32 mode = FIELD_GET(REG_GPIOx_MODE, reg);
+					u32 off = FIELD_PREP(REG_GPIOx_MODE,
+							     REG_GPIOx_IN_IRQ_OFF);
+
+					if (!(reg & REG_GPIOx_PERIPH) &&
+					    mode >= REG_GPIOx_IN_IRQ_HI &&
+					    mode <= REG_GPIOx_IN_IRQ_ANY)
+						apple_gpio_set_reg(pctl, pin, REG_GPIOx_MODE, off);
+				}
+				writel(BIT(pinl), pctl->base + REG_IRQ(*grpp, pinh));
+				dev_warn_ratelimited(pctl->dev,
+						     "masked orphan warm GPIO IRQ group=%u pin=%u\n",
+						     *grpp, pin);
+			}
+		}
 	}
 	chained_irq_exit(chip, desc);
 }
@@ -367,11 +412,45 @@ static const struct irq_chip apple_gpio_irqchip = {
 	.irq_mask		= apple_gpio_irq_mask,
 	.irq_unmask		= apple_gpio_irq_unmask,
 	.irq_set_type		= apple_gpio_irq_set_type,
-	.flags			= IRQCHIP_IMMUTABLE,
+	/*
+	 * Nothing to arm: the bank interrupts are chained to the AIC, which
+	 * stays up in suspend-to-idle, and any of them wakes the CPU. Without
+	 * this, enable_irq_wake() fails and so does gpio-keys' suspend.
+	 */
+	.flags			= IRQCHIP_IMMUTABLE | IRQCHIP_SKIP_SET_WAKE,
 	GPIOCHIP_IRQ_RESOURCE_HELPERS,
 };
 
 /* Probe & register */
+
+static void apple_gpio_warm_quiesce(struct apple_gpio_pinctrl *pctl)
+{
+	struct gpio_chip *gc = &pctl->gpio_chip;
+	unsigned int pin, group, mode, masked = 0;
+	u32 reg;
+
+	if (!pctl->warm)
+		return;
+	/* Before chained parent IRQs are enabled, retire old GPIO IRQ modes.
+	 * Preserve outputs, mux, pulls, data and grouping. Consumers rearm their
+	 * own pins later; panic entry need not have run any shutdown callbacks.
+	 */
+	for (pin = 0; pin < gc->ngpio; pin++) {
+		reg = apple_gpio_get_reg(pctl, pin);
+		mode = FIELD_GET(REG_GPIOx_MODE, reg);
+		if (!(reg & REG_GPIOx_PERIPH) && mode >= REG_GPIOx_IN_IRQ_HI &&
+		    mode <= REG_GPIOx_IN_IRQ_ANY) {
+			apple_gpio_set_reg(pctl, pin, REG_GPIOx_MODE,
+					   FIELD_PREP(REG_GPIOx_MODE, REG_GPIOx_IN_IRQ_OFF));
+			masked++;
+		}
+	}
+	for (group = 0; group < gc->irq.num_parents; group++)
+		for (pin = 0; pin < gc->ngpio; pin += 32)
+			writel(GENMASK(min(32U, gc->ngpio - pin) - 1, 0),
+			       pctl->base + REG_IRQ(group, pin));
+	dev_info(pctl->dev, "warm GPIO IRQ baseline: masked %u inherited inputs\n", masked);
+}
 
 static int apple_gpio_register(struct apple_gpio_pinctrl *pctl)
 {
@@ -422,6 +501,7 @@ static int apple_gpio_register(struct apple_gpio_pinctrl *pctl)
 		girq->handler = handle_level_irq;
 	}
 
+	apple_gpio_warm_quiesce(pctl);
 	ret = devm_gpiochip_add_data(pctl->dev, &pctl->gpio_chip, pctl);
 
 out_free_irq_data:
@@ -455,6 +535,9 @@ static int apple_gpio_pinctrl_probe(struct platform_device *pdev)
 	if (!pctl)
 		return -ENOMEM;
 	pctl->dev = &pdev->dev;
+	pctl->warm = of_machine_is_compatible("apple,j71t") &&
+		of_property_read_bool(of_chosen, "linux,booted-from-kexec");
+	pctl->soc = of_device_get_match_data(&pdev->dev);
 	pctl->gpio_chip.irq.num_parents = nirqs;
 	dev_set_drvdata(&pdev->dev, pctl);
 
@@ -521,7 +604,12 @@ static int apple_gpio_pinctrl_probe(struct platform_device *pdev)
 	return apple_gpio_register(pctl);
 }
 
+static const struct apple_gpio_soc_data s8000_gpio_data = {
+	.s8000_mux = true,
+};
+
 static const struct of_device_id apple_gpio_pinctrl_of_match[] = {
+	{ .compatible = "apple,s8000-pinctrl", .data = &s8000_gpio_data },
 	{ .compatible = "apple,t8103-pinctrl", },
 	{ .compatible = "apple,pinctrl", },
 	{ }

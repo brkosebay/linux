@@ -5190,11 +5190,13 @@ static int hci_init_sync(struct hci_dev *hdev)
 	return 0;
 }
 
-#define HCI_QUIRK_BROKEN(_quirk, _desc) { HCI_QUIRK_BROKEN_##_quirk, _desc }
+#define HCI_QUIRK_BROKEN(_quirk, _desc) \
+	{ HCI_QUIRK_BROKEN_##_quirk, _desc, false }
 
 static const struct {
 	unsigned long quirk;
 	const char *desc;
+	bool quiet;
 } hci_broken_table[] = {
 	HCI_QUIRK_BROKEN(LOCAL_COMMANDS,
 			 "HCI Read Local Supported Commands not supported"),
@@ -5204,9 +5206,9 @@ static const struct {
 	HCI_QUIRK_BROKEN(ERR_DATA_REPORTING,
 			 "HCI Read Default Erroneous Data Reporting command is "
 			 "advertised, but not supported."),
-	HCI_QUIRK_BROKEN(READ_TRANSMIT_POWER,
-			 "HCI Read Transmit Power Level command is advertised, "
-			 "but not supported."),
+	/* This established workaround still blocks the unsupported command. */
+	{ HCI_QUIRK_BROKEN_READ_TRANSMIT_POWER,
+	  "HCI Read Transmit Power Level command is advertised, but not supported.", true },
 	HCI_QUIRK_BROKEN(FILTER_CLEAR_ALL,
 			 "HCI Set Event Filter command not supported."),
 	HCI_QUIRK_BROKEN(ENHANCED_SETUP_SYNC_CONN,
@@ -5250,7 +5252,11 @@ static int hci_dev_setup_sync(struct hci_dev *hdev)
 		ret = hdev->setup(hdev);
 
 	for (i = 0; i < ARRAY_SIZE(hci_broken_table); i++) {
-		if (hci_test_quirk(hdev, hci_broken_table[i].quirk))
+		if (!hci_test_quirk(hdev, hci_broken_table[i].quirk))
+			continue;
+		if (hci_broken_table[i].quiet)
+			bt_dev_dbg(hdev, "%s", hci_broken_table[i].desc);
+		else
 			bt_dev_warn(hdev, "%s", hci_broken_table[i].desc);
 	}
 

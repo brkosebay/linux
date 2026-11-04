@@ -2194,7 +2194,10 @@ static bool nvme_update_disk_info(struct nvme_ns *ns, struct nvme_id_ns *id,
 
 static bool nvme_ns_is_readonly(struct nvme_ns *ns, struct nvme_ns_info *info)
 {
-	return info->is_readonly || test_bit(NVME_NS_FORCE_RO, &ns->flags);
+	return info->is_readonly || test_bit(NVME_NS_FORCE_RO, &ns->flags) ||
+		test_bit(NVME_CTRL_FORCE_RO, &ns->ctrl->flags) ||
+		(ns->ctrl->ops->ns_is_readonly &&
+		 ns->ctrl->ops->ns_is_readonly(ns->ctrl, ns->head->ns_id));
 }
 
 static inline bool nvme_first_scan(struct gendisk *disk)

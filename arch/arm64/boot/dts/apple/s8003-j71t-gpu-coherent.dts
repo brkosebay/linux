@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/* Round19b allocation-policy comparison; stock j71t DTB stays unchanged. */
+#include "s8003-j71t.dts"
+
+&gpu_diag {
+	dma-coherent;
+};

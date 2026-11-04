@@ -332,6 +332,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	arm64_memblock_init();
 
 	paging_init();
+	apple_j71t_publish_pstore();
 
 	acpi_table_upgrade();
 

@@ -17,6 +17,7 @@
 #include <linux/phy/phy.h>
 #include <linux/platform_data/s3c-hsotg.h>
 #include <linux/reset.h>
+#include <linux/suspend.h>
 
 #include <linux/usb/of.h>
 
@@ -646,6 +647,33 @@ error:
 	return retval;
 }
 
+static bool s2idle_keep_gadget;
+module_param(s2idle_keep_gadget, bool, 0644);
+MODULE_PARM_DESC(s2idle_keep_gadget,
+	"Leave a connected gadget running over suspend-to-idle instead of disconnecting it (default off)");
+
+/*
+ * Suspend-to-idle with dwc2.s2idle_keep_gadget: leave the controller and
+ * its PHY powered and the gadget connected. Its interrupt is off while the
+ * system sleeps, so the host sees NAKs and nothing else; a gadget network
+ * link (and anything on it, e.g. an NBD root) survives a short sleep.
+ * The controller and PHY are put on the wakeup path so that their power
+ * domains stay on (GENPD_FLAG_ACTIVE_WAKEUP).
+ */
+static bool dwc2_keep_gadget_for_s2idle(struct dwc2_hsotg *dwc2)
+{
+	if (!s2idle_keep_gadget || !pm_suspend_no_platform() ||
+	    !dwc2_is_device_mode(dwc2) || dwc2->lx_state != DWC2_L0)
+		return false;
+
+	device_set_wakeup_path(dwc2->dev);
+	if (dwc2->phy && dwc2->phy->dev.parent)
+		device_set_wakeup_path(dwc2->phy->dev.parent);
+	dwc2->kept_for_s2idle = 1;
+	dev_info(dwc2->dev, "s2idle: gadget stays connected\n");
+	return true;
+}
+
 static int __maybe_unused dwc2_suspend(struct device *dev)
 {
 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
@@ -653,6 +681,9 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 	int ret = 0;
 
 	if (!dwc2->ll_hw_enabled)
+		return 0;
+
+	if (dwc2_keep_gadget_for_s2idle(dwc2))
 		return 0;
 
 	is_device_mode = dwc2_is_device_mode(dwc2);
@@ -734,6 +765,11 @@ static int __maybe_unused dwc2_resume(struct device *dev)
 
 	if (!dwc2->ll_hw_enabled)
 		return 0;
+
+	if (dwc2->kept_for_s2idle) {
+		dwc2->kept_for_s2idle = 0;
+		return 0;
+	}
 
 	if (dwc2->phy_off_for_suspend && dwc2->ll_hw_enabled) {
 		ret = __dwc2_lowlevel_hw_enable(dwc2);

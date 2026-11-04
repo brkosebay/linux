@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/apple,s8000-vxd.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Apple VXD hardware video decoder (Imagination PowerVR MSVDX)
+
+maintainers:
+  - Berkay Kosebay <brkosebay@gmail.com>
+
+description: |
+  The Apple "VXD" peripheral is a multi-standard hardware video decoder,
+  an Imagination PowerVR MSVDX core running the resident DEVA firmware on
+  its MTX (META) microcontroller.  Apple has shipped this IP family since
+  the S5L8940X (A4); the S8000/S8003 (A9) in the iPad 5 reports
+  vxd-version 7.  The block has no IOMMU (DART): it carries its own
+  two-level "GART" translation unit, programmed by the host through the
+  MTX MMU registers.
+
+  Linux exposes it as a V4L2 stateless H.264 decoder.  The DEVA firmware
+  image must be supplied as /lib/firmware/apple/vxd-deva.bin.
+
+properties:
+  compatible:
+    items:
+      - const: apple,s8000-vxd
+
+  reg:
+    maxItems: 1
+
+  interrupts:
+    maxItems: 1
+
+  power-domains:
+    maxItems: 1
+
+required:
+  - compatible
+  - reg
+  - interrupts
+  - power-domains
+
+additionalProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/interrupt-controller/apple-aic.h>
+
+    soc {
+      #address-cells = <2>;
+      #size-cells = <2>;
+
+      vxd@207f00000 {
+        compatible = "apple,s8000-vxd";
+        reg = <0x2 0x07f00000 0x0 0x100000>;
+        interrupts = <AIC_IRQ 157 IRQ_TYPE_LEVEL_HIGH>;
+        power-domains = <&ps_vdec>;
+      };
+    };

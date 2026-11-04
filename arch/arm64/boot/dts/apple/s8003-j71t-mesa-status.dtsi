@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * J71t Mesa status-only bring-up.
+ *
+ * No sensor interrupt is declared because ADT GPIO mode 3 has not yet been
+ * translated to a Linux trigger.  The client can only sequence the two
+ * volatile supplies and issue its single, explicit 23-byte status poll.
+ */
+
+/ {
+	/* Live iOS arm-io clock-frequencies[0x12f - 0x100]. */
+	spi2_nclk: clock-spi2-mesa {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <61538461>;
+	};
+};
+
+&{/soc/i2c@20a110000/pmic@3c} {
+	mesa_3v0: regulator@312 {
+		compatible = "apple,d2365-mesa-ldo";
+		reg = <0x312>;
+		regulator-name = "mesa-3v0";
+	};
+
+	mesa_1v8: regulator@319 {
+		compatible = "apple,d2365-mesa-ldo";
+		reg = <0x319>;
+		regulator-name = "mesa-1v8";
+	};
+};
+
+&{/soc} {
+	spi2_mesa: spi@20a088000 {
+		compatible = "apple,s8000-spi";
+		reg = <0x2 0x0a088000 0x0 0x4000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 190 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&spi2_nclk>;
+		power-domains = <&ps_spi2>;
+		status = "okay";
+		/* ADT function-spi_cs0 is null: use controller-internal CS. */
+
+		mesa: biosensor@0 {
+			compatible = "apple,mesa";
+			reg = <0>;
+			spi-max-frequency = <8000000>;
+			/* Mesa init defaults phase=3: CPHA plus Samsung CFG[20]. */
+			spi-cpha;
+			apple,s8000-spi-clock-phase = <3>;
+			/* ADT reg +16 = 20 ns; Apple rounds this up to 1 us. */
+			spi-cs-setup-delay-ns = <1000>;
+			spi-cs-hold-delay-ns = <1000>;
+			vdd-3v0-supply = <&mesa_3v0>;
+			vdd-1v8-supply = <&mesa_1v8>;
+			apple,power-off-delay-ms = <1000>;
+		};
+	};
+};

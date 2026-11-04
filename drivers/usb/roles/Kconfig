@@ -26,4 +26,18 @@ config USB_ROLES_INTEL_XHCI
 	  To compile the driver as a module, choose M here: the module will
 	  be called intel-xhci-usb-role-switch.
 
+config USB_ROLES_APPLE_S8000
+	tristate "Apple S8000 (A9) Lightning port role switch"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on OF && I2C
+	select REGMAP
+	help
+	  Role switch for the Apple A9 USB complex, which pairs a device-only
+	  DWC2 with a separate EHCI + OHCI host pair behind one PHY. Device
+	  mode stays the default; host mode is entered on request through
+	  /sys/class/usb_role and reverts after a timeout unless confirmed.
+
+	  To compile the driver as a module, choose M here: the module will
+	  be called apple-s8000-usb-role.
+
 endif # USB_ROLE_SWITCH

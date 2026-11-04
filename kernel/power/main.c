@@ -152,6 +152,32 @@ int pm_sleep_fs_sync(void)
 /* Routines for PM-transition notifications */
 
 static BLOCKING_NOTIFIER_HEAD(pm_chain_head);
+static BLOCKING_NOTIFIER_HEAD(pm_suspend_precheck_chain_head);
+
+int register_pm_suspend_precheck_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&pm_suspend_precheck_chain_head,
+						nb);
+}
+EXPORT_SYMBOL_GPL(register_pm_suspend_precheck_notifier);
+
+int unregister_pm_suspend_precheck_notifier(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&pm_suspend_precheck_chain_head,
+						  nb);
+}
+EXPORT_SYMBOL_GPL(unregister_pm_suspend_precheck_notifier);
+
+int pm_suspend_precheck_call_chain(suspend_state_t state)
+{
+	int ret;
+
+	/* Veto-only: callers have not changed system suspend state yet. */
+	ret = blocking_notifier_call_chain(&pm_suspend_precheck_chain_head,
+					   (unsigned long)state, NULL);
+
+	return notifier_to_errno(ret);
+}
 
 int register_pm_notifier(struct notifier_block *nb)
 {

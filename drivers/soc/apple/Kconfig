@@ -4,6 +4,60 @@ if ARCH_APPLE || COMPILE_TEST
 
 menu "Apple SoC drivers"
 
+config APPLE_A9_AOP
+	bool "J71t AOP read-only bring-up observer"
+	depends on ARCH_APPLE && OF && DEBUG_FS && APPLE_PMGR_PWRSTATE
+	select FW_LOADER
+	default n
+	help
+	  Read only five allowlisted AOP wrapper registers after checking all
+	  five power domains. Does not attach to genpd, change power, consume
+	  FIFOs, request IRQs or write hardware. Also requires the boot parameter
+	  apple_a9_aop.debug=1. An optional attach preflight never starts RTKit.
+	  ring_scan=1 instead scans linear-mapped System RAM once through debugfs;
+	  ring_iio=1 reads a previously reserved inherited ring when IIO=y.
+	  All ring modes exclude the active driver and all wrapper access.
+	  With debug=1 ring_scan=1, ring_scan_early=1 captures at postcore initcall
+	  before device probing. E1 skips protected/unreadable pages and reports
+	  bounded coverage; it never reserves or writes the inherited rings.
+	  ring_scan_reserved=1 also reads reserved linear-mapped System RAM;
+	  no-map pages and MMIO remain excluded.
+	  With debug=1, matching ring_pa/ring_pa_size lists capture up to four
+	  exact linear-mapped System RAM ranges twice at postcore, 1 s apart.
+	  Each range is at most 64 KiB. No source reservation or write occurs.
+	  Independent state_probe=1 captures only CPU status and outbox enable at
+	  probe after the five-domain PMGR check; debugfs repeats the saved line.
+	  It needs neither debug=1 nor ring mode and excludes the active driver.
+	  Independent attach_stage=1 freezes four PMGR-guarded mailbox status
+	  registers at probe, without consuming data. Stages 2/3 instead select
+	  an explicitly unverified one-shot HELLO / reserved-AFK accel experiment
+	  in APPLE_A9_AOP_ACTIVE, with all other observer modes and active=0.
+
+config APPLE_A9_AOP_IIO
+	bool "J71t AOP accelerometer IIO consumer"
+	depends on APPLE_A9_AOP && IIO
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+	default n
+	help
+	  IIO accelerometer for the AOP accel service. Registered only by the
+	  active driver after the firmware delivered a first report.
+
+config APPLE_A9_AOP_ACTIVE
+	bool "J71t AOP active driver (firmware boot, RTBuddy, SPU/AFK)"
+	depends on APPLE_A9_AOP_IIO && HAS_DMA
+	select CRYPTO_LIB_SHA256
+	default n
+	help
+	  Load and start the AOP firmware from /lib/firmware/apple/aop, run
+	  the RTBuddy management and SPU/AFK v8 transport, bind the accel
+	  service and register its IIO device. Experimental; inert unless the
+	  boot parameter apple_a9_aop.active=1 is given. Never resets the AOP;
+	  a running AOP needs fingerprinted, reserved ext memory and two ping
+	  acks. Also requires apple_a9_aop.attach=1 for the old attach path.
+	  Independent attach_stage=2/3 bypasses that proof under accepted crash
+	  risk. No cold loader, AON writes or IRQs; stage 3 grants reserved RAM.
+
 config APPLE_MAILBOX
 	tristate "Apple SoC mailboxes"
 	depends on PM
@@ -16,15 +70,27 @@ config APPLE_MAILBOX
 
 	  Say Y here if you have an Apple SoC.
 
+config APPLE_J71T_BOOT_WATCHDOG
+	bool "Apple j71t opt-in software boot deadline"
+	depends on ARM64 && OF && KEXEC_CORE
+	depends on ARCH_APPLE || COMPILE_TEST
+	help
+	  Allow apple_boot_watchdog.timeout=30..600 to panic if early boot
+	  does not finish in time. Userspace must write 0 to its timeout
+	  parameter after mounting a usable root. Root can explicitly rearm
+	  it before a diagnostic shutdown. Disabled by default and
+	  ignored in capture kernels. This never resets the SoC directly.
+
 config APPLE_PMGR_MISC
 	tristate "Apple SoC PMGR miscellaneous support"
 	depends on PM
 	help
 	  The PMGR block in Apple SoCs provides high-level power state
 	  controls for SoC devices. This driver manages miscellaneous
-	  power controls.
+	  power controls. On A9 (S8000/S8003) it runs the SoC and memory in
+	  their fast performance state.
 
-	  Say 'y' here if you have a Pro/Max/Ultra Apple SoC.
+	  Say 'y' here if you have a Pro/Max/Ultra or an A9 Apple SoC.
 
 config APPLE_RTKIT
 	tristate "Apple RTKit co-processor IPC protocol"
@@ -48,6 +114,19 @@ config APPLE_PMP_T8015_V1
 
 	  Say 'y' here if you have an Apple A11 SoC.
 
+config APPLE_SIO
+	tristate "Apple S8000/T8010 SmartIO coprocessor"
+	depends on ARM64
+	depends on PM
+	depends on ARCH_APPLE || COMPILE_TEST
+	help
+	  Support the SmartIO coprocessor found on Apple T8010 SoCs. SmartIO
+	  boots dedicated firmware and exchanges endpoint messages with the
+	  application processor. It provides DMA services to peripheral
+	  controllers such as SPI.
+
+	  Say Y here if you have an Apple S8000/S8003 or T8010 SoC.
+
 config APPLE_SART
 	tristate "Apple SART DMA address filter"
 	depends on ARCH_APPLE || COMPILE_TEST
@@ -62,6 +141,22 @@ config APPLE_TUNABLE
 	tristate
 	depends on ARCH_APPLE || COMPILE_TEST
 
+config APPLE_A9_DVFS_RO
+	tristate "Read-only Apple S8003 CPU DVFS observer"
+	depends on ARCH_APPLE && ARM64 && DEBUG_FS && OF
+	help
+	  Default-off debugfs snapshot of CPU state and PSINFO words.
+	  Requires enable=1 and CAP_SYS_RAWIO. No hardware write path.
+	  Does not provide temperatures or decode PMIC rail voltages.
+
 endmenu
 
 endif
+
+config APPLE_SEP_A9
+	tristate "Apple A9 Secure Enclave mailbox"
+	depends on ARCH_APPLE || COMPILE_TEST
+	help
+	  Mailbox driver for the Secure Enclave on Apple A9 (s8000/s8003).
+	  Exposes raw SEP messaging and endpoint OOL buffer setup. Used to
+	  bring up sepOS and the biometric (SBIO) endpoint on iPad 5.

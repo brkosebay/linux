@@ -53,6 +53,18 @@
 
 #define APPLE_WDT_TIMEOUT_DEFAULT	30
 
+/*
+ * On iDevices booted through a bootrom exploit (checkm8 -> pongoOS -> m1n1),
+ * a SoC reset boots the stock OS, and getting back to Linux needs a host
+ * computer and a manual DFU entry. With cold_restart=0 the restart handler
+ * refuses, so a reboot that wasn't meant to leave Linux (a failed kexec, a
+ * panic timeout, sysrq-b) halts instead. Writable at runtime, so a
+ * deliberate "reboot to iOS" can turn it back on first.
+ */
+static bool cold_restart = true;
+module_param(cold_restart, bool, 0644);
+MODULE_PARM_DESC(cold_restart, "Allow restarts through a SoC reset (default: true)");
+
 struct apple_wdt {
 	struct watchdog_device wdd;
 	void __iomem *regs;
@@ -122,6 +134,11 @@ static int apple_wdt_restart(struct watchdog_device *wdd, unsigned long mode,
 			     void *cmd)
 {
 	struct apple_wdt *wdt = to_apple_wdt(wdd);
+
+	if (!READ_ONCE(cold_restart)) {
+		pr_emerg("apple-wdt: SoC reset refused (apple_wdt.cold_restart=0), halting\n");
+		return -EPERM;
+	}
 
 	writel_relaxed(APPLE_WDT_CTRL_RESET_EN, wdt->regs + APPLE_WDT_WD1_CTRL);
 	writel_relaxed(0, wdt->regs + APPLE_WDT_WD1_BITE_TIME);

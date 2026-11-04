@@ -9,4 +9,15 @@ config SND_SOC_APPLE_MCA
 	  This option enables an ASoC platform driver for MCA peripherals found
 	  on Apple Silicon SoCs.
 
+config SND_SOC_APPLE_S8000_MCA
+	tristate "Apple S8000 (A9) MCA driver"
+	depends on ARCH_APPLE || COMPILE_TEST
+	depends on COMMON_CLK
+	select MFD_SYSCON
+	select SND_DMAENGINE_PCM
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  ASoC CPU DAI for the "mca-version 4" serializer of the Apple A9
+	  (S8000/S8003), including its MCLK output and i2s-switch route.
+
 endmenu

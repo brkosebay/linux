@@ -12,6 +12,8 @@
  */
 #include <linux/notifier.h>
 
+void driver_boot_trace(struct device *dev, const char *stage);
+
 /**
  * struct subsys_private - structure to hold the private to the driver core
  *			   portions of the bus_type/class structure.

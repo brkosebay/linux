@@ -9,6 +9,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
+#include <linux/crash_dump.h>
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/version.h>
@@ -728,6 +729,12 @@ static int ramoops_probe(struct platform_device *pdev)
 	size_t dump_mem_sz;
 	phys_addr_t paddr;
 	int err = -EINVAL;
+
+	/* Leave the original panic/console records intact across phoenix. */
+	if (is_kdump_kernel() && of_machine_is_compatible("apple,j71t")) {
+		pr_info("capture kernel: preserving j71t records for the full boot\n");
+		return -ENODEV;
+	}
 
 	/*
 	 * Only a single ramoops area allowed at a time, so fail extra
