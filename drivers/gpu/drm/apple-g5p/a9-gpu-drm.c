@@ -603,6 +603,7 @@ static int g5p_drm_probe(struct platform_device *pdev)
 	atomic_set(&d->open_files, 0);
 	atomic_set(&d->r8_queued, 0);
 	drm_debugfs_add_file(&d->drm, "g5p_bos", g5p_bos_show, NULL);
+	drm_debugfs_add_file(&d->drm, "g5p_cache_receipts", g5p_cache_show, NULL);
 	ret = drm_dev_register(&d->drm, 0);
 	if (ret)
 		goto err_pm;

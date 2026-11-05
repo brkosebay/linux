@@ -323,6 +323,8 @@ struct g5p_rstuck {
 	u64 lost_ns;
 };
 
+#include "cache-receipt.inc"
+
 /* A listed BO that needs implicit fences and/or kernel cache maintenance. */
 struct g5p_robj {
 	struct drm_gem_object *obj; /* reference held by the job */
@@ -332,6 +334,7 @@ struct g5p_robj {
 };
 
 struct g5p_rjob {
+	struct g5p_cache_receipt cache;
 	struct g5p_rs_job node; /* in its context's FIFO until picked */
 	struct g5p_drm *gpu;
 	struct g5p_context *ctx;
@@ -870,6 +873,24 @@ static void g5p_render_cache(struct g5p_drm *d, struct g5p_rjob *job,
 		 */
 		if (to_cpu && !(o->access & DRM_G5P_RENDER_ACCESS_WRITE))
 			continue;
+		struct g5p_cache_receipt *cr = &job->cache;
+		bool imported = drm_gem_is_imported(o->obj);
+		bool exported = READ_ONCE(o->obj->dma_buf) != NULL;
+		bool wc = to_drm_gem_shmem_obj(o->obj)->map_wc;
+		int cls = g5p_cache_class(imported, exported, wc);
+		u64 bytes = o->hi ? o->hi - o->lo : o->obj->size;
+		u64 cpu = 0, wall = 0;
+		if (cr->enabled)
+			cr->requested[to_cpu][cls] += bytes;
+		/* Native pages are initially DMA-mapped with no SKIP_CPU_SYNC.
+		 * All later CPU views of a private map_wc object (GEM mmap/vmap,
+		 * including command validation) are write-combined. There is no
+		 * cacheable client alias to clean/invalidate. Shared/foreign BOs
+		 * remain conservative. Barriers below still order WC accesses.
+		 */
+		if (g5p_cache_omit(cr->policy, imported, exported, wc))
+			continue;
+		if (cr->enabled) { cpu = task_sched_runtime(current); wall = ktime_get_ns(); }
 		if (o->hi && (o->lo || o->hi != o->obj->size))
 			g5p_sync_sgt_range(d->drm.dev, sgt, o->lo, o->hi,
 					   to_cpu);
@@ -879,7 +900,13 @@ static void g5p_render_cache(struct g5p_drm *d, struct g5p_rjob *job,
 		else
 			dma_sync_sgtable_for_device(d->drm.dev, sgt,
 						    DMA_BIDIRECTIONAL);
+		if (cr->enabled) {
+			cr->maintained[to_cpu][cls] += bytes;
+			cr->cpu[to_cpu][cls] += task_sched_runtime(current) - cpu;
+			cr->wall[to_cpu][cls] += ktime_get_ns() - wall;
+		}
 	}
+	if (to_cpu) dma_rmb(); else dma_wmb();
 }
 
 /* After acceptance, render_submit_lock held, no file lock: one dma_resv at a
@@ -961,6 +988,13 @@ static void g5p_render_run(struct g5p_rjob *job)
 	bool hardware = false;
 	int ret;
 
+	job->cache.enabled = READ_ONCE(render_user_cache_receipts);
+	job->cache.policy = READ_ONCE(render_user_cache_private_wc);
+	if (job->cache.enabled) {
+		job->cache.job = job->id;
+		job->cache.start_cpu = task_sched_runtime(current);
+		job->cache.start_wall = ktime_get_ns();
+	}
 	/* Admission closes only for good (reboot quiesce, FINAL teardown): a job queued before
 	 * that fails here, without waiting for its inputs and without competing for the command
 	 * lock.
@@ -1055,7 +1089,16 @@ static void g5p_render_run(struct g5p_rjob *job)
 			"RENDER-USER job=%llu seq=%u complete=%d slots=%u/%u\n",
 			job->id, job->v3 ? job->rv3.seq : d->rdev->sequence,
 			ret, r->slot[0], r->slot[1]);
+	if (job->cache.enabled) {
+		job->cache.total_cpu = task_sched_runtime(current) - job->cache.start_cpu;
+		job->cache.total_wall = ktime_get_ns() - job->cache.start_wall;
+		spin_lock_irqsave(&g5p_cache_ring_lock, flags);
+		job->cache.serial = g5p_cache_head + 1;
+		g5p_cache_ring[g5p_cache_head++ % G5P_CACHE_RECORDS] = job->cache;
+		spin_unlock_irqrestore(&g5p_cache_ring_lock, flags);
+	}
 	g5p_render_job_free(job);
+
 	drm_dev_put(&d->drm);
 }
 
@@ -2125,6 +2168,7 @@ static int g5p_render_submit_admitted(struct drm_device *drm,
 	kref_get(&c->ref);
 	job->ctx = c;
 	job->gpu = d;
+	job->cache.pid = task_tgid_nr(current);
 	mutex_unlock(&f->lock);
 	if (point) {
 		drm_syncobj_add_point(signal, chain, &job->fence->base, point);
