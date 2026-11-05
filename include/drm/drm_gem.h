@@ -74,6 +74,14 @@ enum drm_gem_object_status {
  */
 struct drm_gem_object_funcs {
 	/**
+	 * @is_cpu_uncached: Optional exporter contract. True only when every
+	 * supported CPU mapping (kernel and userspace) is uncached or WC and
+	 * no cacheable alias exists. Native allocation properties must be
+	 * immutable; imported memory must not inherit this promise. Default
+	 * NULL is conservative. This does not remove DMA ordering barriers.
+	 */
+	bool (*is_cpu_uncached)(struct drm_gem_object *obj);
+	/**
 	 * @free:
 	 *
 	 * Deconstructor for drm_gem_objects.

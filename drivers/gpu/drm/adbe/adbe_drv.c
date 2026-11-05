@@ -761,6 +761,7 @@ static int adbe_gem_mmap(struct drm_gem_object *obj, struct vm_area_struct *vma)
 
 /* drm_gem_dma_default_funcs, plus the bookkeeping. */
 static const struct drm_gem_object_funcs adbe_gem_funcs = {
+	.is_cpu_uncached = drm_gem_dma_object_is_cpu_uncached,
 	.free = adbe_gem_free,
 	.print_info = drm_gem_dma_object_print_info,
 	.get_sg_table = drm_gem_dma_object_get_sg_table,

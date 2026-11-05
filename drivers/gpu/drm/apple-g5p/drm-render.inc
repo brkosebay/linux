@@ -888,7 +888,9 @@ static void g5p_render_cache(struct g5p_drm *d, struct g5p_rjob *job,
 		 * cacheable client alias to clean/invalidate. Shared/foreign BOs
 		 * remain conservative. Barriers below still order WC accesses.
 		 */
-		if (g5p_cache_omit(cr->policy, imported, exported, wc))
+		bool imported_uncached = imported &&
+			drm_gem_dma_buf_is_cpu_uncached(o->obj->import_attach->dmabuf);
+		if ((imported_uncached && cr->import_policy) || g5p_cache_omit(cr->policy, imported, exported, wc))
 			continue;
 		if (cr->enabled) { cpu = task_sched_runtime(current); wall = ktime_get_ns(); }
 		if (o->hi && (o->lo || o->hi != o->obj->size))
@@ -990,6 +992,7 @@ static void g5p_render_run(struct g5p_rjob *job)
 
 	job->cache.enabled = READ_ONCE(render_user_cache_receipts);
 	job->cache.policy = READ_ONCE(render_user_cache_private_wc);
+	job->cache.import_policy = READ_ONCE(render_user_cache_import_wc);
 	if (job->cache.enabled) {
 		job->cache.job = job->id;
 		job->cache.start_cpu = task_sched_runtime(current);
@@ -1776,12 +1779,26 @@ static int g5p_render_read_va(struct drm_device *drm, struct g5p_vm *vm, u64 va,
 	ret = IS_ERR(sgt) ? PTR_ERR(sgt) : drm_gem_vmap(obj, &map);
 	if (ret)
 		return ret;
-	dma_sync_sgtable_for_cpu(drm->dev, sgt, DMA_BIDIRECTIONAL);
+	/* Keep content validation. Native private WC has no CPU cache alias;
+	 * all other supported mappings retain a bounded DMA ownership sync.
+	 */
+	bool range = READ_ONCE(render_user_cache_read_va);
+	bool omit = range && g5p_cache_omit(READ_ONCE(render_user_cache_private_wc),
+		false, READ_ONCE(obj->dma_buf) != NULL, to_drm_gem_shmem_obj(obj)->map_wc);
+	if (!omit) {
+		if (range) g5p_sync_sgt_range(drm->dev, sgt, off, off + len, true);
+		else dma_sync_sgtable_for_cpu(drm->dev, sgt, DMA_BIDIRECTIONAL);
+	}
+	dma_rmb();
 	if (map.is_iomem)
 		ret = -EINVAL;
 	else
 		memcpy(dst, (const u8 *)map.vaddr + off, len);
-	dma_sync_sgtable_for_device(drm->dev, sgt, DMA_BIDIRECTIONAL);
+	if (!omit) {
+		if (range) g5p_sync_sgt_range(drm->dev, sgt, off, off + len, false);
+		else dma_sync_sgtable_for_device(drm->dev, sgt, DMA_BIDIRECTIONAL);
+	}
+	dma_wmb();
 	drm_gem_vunmap(obj, &map);
 	return ret;
 }

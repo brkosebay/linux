@@ -2,6 +2,8 @@
 #ifndef __DRM_GEM_DMA_HELPER_H__
 #define __DRM_GEM_DMA_HELPER_H__
 
+#include <linux/dma-map-ops.h>
+#include <drm/drm_device.h>
 #include <drm/drm_file.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_gem.h>
@@ -131,6 +133,16 @@ static inline int drm_gem_dma_object_mmap(struct drm_gem_object *obj, struct vm_
 	struct drm_gem_dma_object *dma_obj = to_drm_gem_dma_obj(obj);
 
 	return drm_gem_dma_mmap(dma_obj, vma);
+}
+
+/* Native DMA allocations use dma_alloc_wc and WC mmap/vmap. Noncoherent
+ * allocations and foreign imports cannot make this promise.
+ */
+static inline bool drm_gem_dma_object_is_cpu_uncached(struct drm_gem_object *obj)
+{
+	return !drm_gem_is_imported(obj) &&
+		!to_drm_gem_dma_obj(obj)->map_noncoherent &&
+		!dev_is_dma_coherent(drm_dev_dma_dev(obj->dev));
 }
 
 /*

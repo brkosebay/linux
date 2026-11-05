@@ -836,6 +836,26 @@ static const struct dma_buf_ops drm_gem_prime_dmabuf_ops =  {
 };
 
 /**
+ * drm_gem_dma_buf_is_cpu_uncached - query a trusted native GEM exporter
+ * @dma_buf: exported buffer whose supported CPU aliases are queried
+ *
+ * Returns true only for the explicit native exporter contract. Non-GEM,
+ * re-exported foreign objects and unspecified exporters remain conservative.
+ */
+bool drm_gem_dma_buf_is_cpu_uncached(struct dma_buf *dma_buf)
+{
+	struct drm_gem_object *obj;
+
+	if (!dma_buf || dma_buf->ops != &drm_gem_prime_dmabuf_ops)
+		return false;
+	obj = dma_buf->priv;
+	return !drm_gem_is_imported(obj) && obj->funcs &&
+		obj->funcs->is_cpu_uncached && obj->funcs->is_cpu_uncached(obj);
+}
+EXPORT_SYMBOL_GPL(drm_gem_dma_buf_is_cpu_uncached);
+
+
+/**
  * drm_prime_pages_to_sg - converts a page array into an sg list
  * @dev: DRM device
  * @pages: pointer to the array of page pointers to convert

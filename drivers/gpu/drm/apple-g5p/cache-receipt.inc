@@ -2,17 +2,24 @@
 /* Bounded RAM-only records. No register accesses, default off. */
 #include <linux/sched/cputime.h>
 #include "cache-policy.h"
+/* Qualified by kernel-cost2b and combined-bench2c; conservative off switches remain. */
+static bool render_user_cache_import_wc = true;
+module_param(render_user_cache_import_wc, bool, 0600);
+MODULE_PARM_DESC(render_user_cache_import_wc, "Omit per-job maintenance only for explicitly CPU-uncached native GEM exporters; default true");
+static bool render_user_cache_read_va = true;
+module_param(render_user_cache_read_va, bool, 0600);
+MODULE_PARM_DESC(render_user_cache_read_va, "Validate native WC command bytes without redundant sync; range-sync conservative mappings; default true");
 static bool render_user_cache_private_wc = true;
 module_param(render_user_cache_private_wc, bool, 0600);
 MODULE_PARM_DESC(render_user_cache_private_wc, "Candidate: omit repeated maintenance only for native private write-combined BOs; imports/exports unchanged; default true");
 static bool render_user_cache_receipts;
 module_param(render_user_cache_receipts, bool, 0600);
-MODULE_PARM_DESC(render_user_cache_receipts, "Bounded RAM-only per-job CPU/cache receipts, default false");
+MODULE_PARM_DESC(render_user_cache_receipts, "Bounded RAM-only per-job CPU/cache receipts, default true");
 struct g5p_cache_receipt {
 	u64 job, start_cpu, start_wall, total_cpu, total_wall;
 	u64 requested[2][3], maintained[2][3], cpu[2][3], wall[2][3];
 	u32 pid, serial;
-	bool enabled, policy;
+	bool enabled, policy, import_policy;
 };
 #define G5P_CACHE_RECORDS 128
 static struct g5p_cache_receipt g5p_cache_ring[G5P_CACHE_RECORDS];
