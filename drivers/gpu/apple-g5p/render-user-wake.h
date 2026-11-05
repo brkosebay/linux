@@ -177,7 +177,7 @@ static inline u32 g5p_wk_arm(u32 mode, u32 seed, u32 seq, u32 e)
 
 static inline u32 g5p_wk_mts(u32 e)
 {
-	return e ? G5P_WK_MTS_3D : G5P_WK_MTS_TA;
+	return G5P_WK_MTS_TA | e;
 }
 
 /* wake111: the evidence word, one bit per fact (the caller samples each fact once). */

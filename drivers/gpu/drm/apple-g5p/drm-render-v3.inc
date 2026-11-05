@@ -2501,6 +2501,8 @@ static int g5p_rv3_execute(struct g5p_drm *d, struct g5p_render *r,
 	int err = -EIO, ret, why, loss;
 	u32 seq, res;
 
+	if (job->compute)
+		return g5p_cu_execute(d, r, job);
 	if (r->stage_done)
 		return -ECANCELED;
 	g5p_l123_job_reset(g);
@@ -2796,6 +2798,9 @@ static bool g5p_rv3_drain(struct g5p_drm *d)
 	bool armed = false;
 	int act, err = -EIO;
 
+	/* TYPED_COMPUTE: a lost CDM job has its own one-phase drain. */
+	if (s->engine == G5P_CU_ENGINE)
+		return g5p_cu_drain(d);
 	while (!mutex_trylock(&g->lock)) {
 		if (time_after(jiffies, deadline))
 			return false;

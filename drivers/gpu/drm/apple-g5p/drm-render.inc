@@ -25,6 +25,9 @@
 #include "../../apple-g5p/render-user-faultreg.h"
 #include "render-user-validate.h"
 #include "drm-render-v3.h"
+#include "../../apple-g5p/compute-user-layout.h"
+#include "compute-user-validate.h"
+#include "drm-compute-v1.h"
 
 /* The terminal state of the epoch (one GPU): from the first terminal note on, no register access. */
 static struct g5p_ru_terminal g5p_rv3_term;
@@ -183,6 +186,7 @@ struct g5p_rdev {
 	bool dc_pending; /* a bind's DC3 pair was not consumed in time ... */
 	u32 dc_wait; /* ... and this is the consumer it waits for */
 	u32 sequence, pm_serial;
+	u32 cu_sequence, cu_target;	/* TYPED_COMPUTE: CDM sequence, CL producer target */
 	u32 blocks;
 	/* perf60, latched at the epoch's first TYPED_V3 attach: 2 = jobs alternate two record slots
 	 * (render-user-layout.h), else 1; pm_once = the PM pool is built at that attach only.
@@ -351,6 +355,8 @@ struct g5p_rjob {
 	unsigned long deadline;
 	u8 ta_w[G5P_RU_TA_W_BYTES], td_w[G5P_RU_3D_W_BYTES];
 	bool v3;
+	bool compute;			/* TYPED_COMPUTE (drm-compute-v1.inc): a CDM job */
+	struct g5p_cu_regs cu;
 	struct g5p_rv3 rv3;
 	u64 submit_ns; /* latency123: the submit ioctl */
 };
@@ -673,6 +679,7 @@ static int g5p_render_device_prepare(struct g5p_drm *d,
 	rd->pm_serial = 0;
 	for (u32 e = 0; e < 2; e++)
 		g5p_ru_channel_init(g5p_ru_page(b, e), g5p_ru_meta(e));
+	g5p_cu_device_init(d);
 	g5p_render_clean_job(g);
 	return 0;
 }

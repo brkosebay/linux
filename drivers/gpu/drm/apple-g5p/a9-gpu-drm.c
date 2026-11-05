@@ -184,6 +184,7 @@ static struct dma_buf *g5p_gem_prime_export(struct drm_gem_object *obj,
 #include "drm-submit.inc"
 #include "drm-render.inc"
 #include "drm-prime.inc"
+#include "drm-compute-v1.inc"
 
 static int g5p_get_info(struct drm_device *drm, void *data,
 			struct drm_file *file)
@@ -235,6 +236,7 @@ static int g5p_get_info(struct drm_device *drm, void *data,
 	;
 	;
 	caps |= DRM_G5P_CAP_PRIME;
+	caps |= DRM_G5P_CAP_TYPED_COMPUTE;
 	a->capabilities = caps;
 	a->va_start = G5P_USER_VA_START;
 	a->va_end = G5P_USER_VA_END;
@@ -505,6 +507,8 @@ static const struct drm_ioctl_desc g5p_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(G5P_GET_RENDER_INFO, g5p_get_render_info,
 			  DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(G5P_SUBMIT_RENDER_TYPED, g5p_submit_render_typed,
+			  DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(G5P_SUBMIT_COMPUTE_TYPED, g5p_submit_compute_typed,
 			  DRM_RENDER_ALLOW),
 };
 
