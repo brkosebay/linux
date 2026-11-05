@@ -14,7 +14,7 @@ module_param(render_user_cache_private_wc, bool, 0600);
 MODULE_PARM_DESC(render_user_cache_private_wc, "Candidate: omit repeated maintenance only for native private write-combined BOs; imports/exports unchanged; default true");
 static bool render_user_cache_receipts;
 module_param(render_user_cache_receipts, bool, 0600);
-MODULE_PARM_DESC(render_user_cache_receipts, "Bounded RAM-only per-job CPU/cache receipts, default true");
+MODULE_PARM_DESC(render_user_cache_receipts, "Bounded RAM-only per-job CPU/cache receipts, default false");
 struct g5p_cache_receipt {
 	u64 job, start_cpu, start_wall, total_cpu, total_wall;
 	u64 requested[2][3], maintained[2][3], cpu[2][3], wall[2][3];
