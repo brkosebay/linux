@@ -2,9 +2,9 @@
 /* Bounded RAM-only records. No register accesses, default off. */
 #include <linux/sched/cputime.h>
 #include "cache-policy.h"
-static bool render_user_cache_private_wc;
+static bool render_user_cache_private_wc = true;
 module_param(render_user_cache_private_wc, bool, 0600);
-MODULE_PARM_DESC(render_user_cache_private_wc, "Candidate: omit repeated maintenance only for native private write-combined BOs; imports/exports unchanged; default false");
+MODULE_PARM_DESC(render_user_cache_private_wc, "Candidate: omit repeated maintenance only for native private write-combined BOs; imports/exports unchanged; default true");
 static bool render_user_cache_receipts;
 module_param(render_user_cache_receipts, bool, 0600);
 MODULE_PARM_DESC(render_user_cache_receipts, "Bounded RAM-only per-job CPU/cache receipts, default false");
